@@ -49,3 +49,7 @@ extend-exclude = ["claude-hop.py"]  # the original prototype, kept for reference
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer's idiom is Option()/Argument() calls in parameter defaults
+"src/claude_hop/cli.py" = ["B008"]
