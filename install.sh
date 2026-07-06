@@ -1,10 +1,10 @@
 #!/usr/bin/env sh
 # claude-hop installer — installs uv if missing, then claude-hop as a uv tool.
 #
-#   curl -sSL https://raw.githubusercontent.com/OWNER/claude-hop/main/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/SeiduTakizawa/Claude-hop/main/install.sh | bash
 #
 # Override the package source (e.g. to install from git or a local checkout):
-#   CLAUDE_HOP_SOURCE="git+https://github.com/OWNER/claude-hop" ./install.sh
+#   CLAUDE_HOP_SOURCE="git+https://github.com/SeiduTakizawa/Claude-hop" ./install.sh
 set -eu
 
 SOURCE="${CLAUDE_HOP_SOURCE:-claude-hop}"

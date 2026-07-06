@@ -27,6 +27,11 @@ dependencies = [
     "rich>=13",
 ]
 
+[project.urls]
+Repository = "https://github.com/SeiduTakizawa/Claude-hop"
+Issues = "https://github.com/SeiduTakizawa/Claude-hop/issues"
+Changelog = "https://github.com/SeiduTakizawa/Claude-hop/blob/main/CHANGELOG.md"
+
 [project.scripts]
 claude-hop = "claude_hop.cli:main"
 

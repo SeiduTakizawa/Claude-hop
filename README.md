@@ -15,7 +15,7 @@ claude-hop push                   # then `claude --resume` on the other machine
 No `uv`? One-liner that installs it first:
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/OWNER/claude-hop/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/SeiduTakizawa/Claude-hop/main/install.sh | bash
 ```
 
 Requirements: Python ≥ 3.11 on this machine; `sshd` and `rsync` on the other
