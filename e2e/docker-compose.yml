@@ -1,0 +1,16 @@
+services:
+  linux:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+      args:
+        HOME_DIR: /home/tester
+    hostname: linux
+
+  mac:
+    build:
+      context: ..
+      dockerfile: e2e/Dockerfile
+      args:
+        HOME_DIR: /Users/tester
+    hostname: mac

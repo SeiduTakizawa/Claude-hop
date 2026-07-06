@@ -201,23 +201,27 @@ def _refuse_if_running(force: bool) -> None:
         raise typer.Exit(1)
 
 
+def _summary_block(report: sync_mod.SyncReport) -> None:
+    if not report.summary:
+        console.print("[green]✓[/green] already in sync — nothing to transfer")
+        return
+    table = Table()
+    table.add_column("Project", overflow="fold")
+    table.add_column("New", justify="right")
+    table.add_column("Updated", justify="right")
+    for project, s in sorted(report.summary.items()):
+        table.add_row(project, str(s.new), str(s.updated))
+    console.print(table)
+    verb = "would transfer" if report.dry_run else "transferred"
+    console.print(f"[green]✓[/green] {verb} {report.total_files} file(s)")
+
+
 def _render_report(report: sync_mod.SyncReport, done_msg: str) -> None:
     if report.dry_run:
         console.print("[cyan]dry run — nothing was written[/cyan]")
-    if not report.summary:
-        console.print("[green]✓[/green] already in sync — nothing to transfer")
-    else:
-        table = Table()
-        table.add_column("Project", overflow="fold")
-        table.add_column("New", justify="right")
-        table.add_column("Updated", justify="right")
-        for project, s in sorted(report.summary.items()):
-            table.add_row(project, str(s.new), str(s.updated))
-        console.print(table)
-        verb = "would transfer" if report.dry_run else "transferred"
-        console.print(f"[green]✓[/green] {verb} {report.total_files} file(s)")
-        if not report.dry_run:
-            console.print(done_msg)
+    _summary_block(report)
+    if report.summary and not report.dry_run:
+        console.print(done_msg)
     if report.backup:
         console.print(f"[dim]local sessions backed up to {report.backup}[/dim]")
 
@@ -262,6 +266,48 @@ def pull(
     except _FAILURES as e:
         raise _fail(e) from e
     _render_report(report, "run [bold]claude --resume[/bold] to pick up where you left off")
+
+
+@app.command()
+def diff() -> None:
+    """Show what would sync in each direction, without writing anything."""
+    cfg = _load_config()
+    home = _local_home()
+    console.print(f"[bold]Outgoing[/bold] (push → {cfg.host or cfg.remote_home})")
+    try:
+        _summary_block(sync_mod.push(cfg, local_home=home, dry_run=True, force=True))
+    except _FAILURES as e:
+        console.print(f"[yellow]~[/yellow] {e}")
+    console.print(f"\n[bold]Incoming[/bold] (pull ← {cfg.host or cfg.remote_home})")
+    try:
+        _summary_block(sync_mod.pull(cfg, local_home=home, dry_run=True, force=True))
+    except _FAILURES as e:
+        console.print(f"[yellow]~[/yellow] {e}")
+
+
+@app.command()
+def doctor() -> None:
+    """Check SSH, rsync, config, and local state for problems."""
+    from claude_hop import doctor as doctor_mod
+
+    checks = doctor_mod.run_checks(_state["config_path"], _local_home())
+    icons = {
+        doctor_mod.OK: "[green]✓[/green]",
+        doctor_mod.WARN: "[yellow]⚠[/yellow]",
+        doctor_mod.FAIL: "[red]✗[/red]",
+    }
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column()
+    table.add_column(style="bold")
+    table.add_column(overflow="fold")
+    for check in checks:
+        table.add_row(icons[check.status], check.name, check.detail)
+    console.print(table)
+    failed = sum(1 for c in checks if c.status == doctor_mod.FAIL)
+    if failed:
+        console.print(f"[red]✗ {failed} check(s) failed[/red]")
+        raise typer.Exit(1)
+    console.print("[green]✓ ready to sync[/green]")
 
 
 def main() -> None:

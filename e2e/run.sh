@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# End-to-end test: two containers (Linux-style and macOS-style homes) with
+# sshd + rsync + key auth. Pushes real sessions from "linux" to "mac",
+# asserts the remap, modifies on "mac", pulls back, asserts the merge.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+step() { printf '\n\033[1m--- %s\033[0m\n' "$*"; }
+
+cleanup() { docker compose down -v --remove-orphans >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+
+# run a command as the tester user on a container
+lx() { docker compose exec -T -u tester linux bash -c "$1"; }
+mc() { docker compose exec -T -u tester mac bash -c "$1"; }
+
+step "build and start containers"
+docker compose up -d --build --quiet-pull
+
+step "set up key auth linux -> mac"
+lx 'mkdir -p ~/.ssh && chmod 700 ~/.ssh &&
+    [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/id_ed25519'
+PUB=$(lx 'cat ~/.ssh/id_ed25519.pub')
+mc "mkdir -p ~/.ssh && chmod 700 ~/.ssh &&
+    printf '%s\n' '$PUB' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+lx 'for i in $(seq 1 30); do
+      ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=2 mac true 2>/dev/null && exit 0
+      sleep 1
+    done
+    echo "sshd on mac unreachable" >&2; exit 1'
+
+step "seed sessions and config on linux"
+lx 'mkdir -p ~/.claude/projects/-home-tester-work-webshop &&
+    printf "%s\n" "{\"cwd\":\"/home/tester/work/webshop\",\"msg\":\"from linux\"}" \
+      > ~/.claude/projects/-home-tester-work-webshop/s1.jsonl'
+lx 'mkdir -p ~/.config/claude-hop &&
+    printf "[remote]\nhost = \"mac\"\nhome = \"/Users/tester\"\n" \
+      > ~/.config/claude-hop/config.toml'
+
+step "claude-hop doctor"
+lx 'claude-hop doctor'
+
+step "claude-hop status"
+lx 'claude-hop status'
+
+step "claude-hop push"
+lx 'claude-hop push --yes'
+
+step "assert remapped sessions on mac"
+mc 'test -f ~/.claude/projects/-Users-tester-work-webshop/s1.jsonl'
+mc 'grep -q "\"cwd\":\"/Users/tester/work/webshop\"" ~/.claude/projects/-Users-tester-work-webshop/s1.jsonl'
+mc '! grep -rq "/home/tester" ~/.claude/projects'
+echo "ok: dirs and JSONL remapped, no /home/tester leakage"
+
+step "modify on mac: new session in the same project + a new project"
+mc 'printf "%s\n" "{\"cwd\":\"/Users/tester/work/webshop\",\"msg\":\"from mac\"}" \
+      > ~/.claude/projects/-Users-tester-work-webshop/s2.jsonl'
+mc 'mkdir -p ~/.claude/projects/-Users-tester-other-beta &&
+    printf "%s\n" "{\"cwd\":\"/Users/tester/other/beta\"}" \
+      > ~/.claude/projects/-Users-tester-other-beta/s1.jsonl'
+
+step "claude-hop pull on linux"
+lx 'claude-hop pull --yes'
+
+step "assert merge on linux"
+lx 'test -f ~/.claude/projects/-home-tester-work-webshop/s1.jsonl'
+lx 'test -f ~/.claude/projects/-home-tester-work-webshop/s2.jsonl'
+lx 'grep -q "\"cwd\":\"/home/tester/work/webshop\"" ~/.claude/projects/-home-tester-work-webshop/s2.jsonl'
+lx 'test -f ~/.claude/projects/-home-tester-other-beta/s1.jsonl'
+lx 'grep -q "\"cwd\":\"/home/tester/other/beta\"" ~/.claude/projects/-home-tester-other-beta/s1.jsonl'
+lx '! grep -rq "/Users/tester" ~/.claude/projects'
+echo "ok: pull merged and remapped, no /Users/tester leakage"
+
+step "claude-hop diff (both directions should be in sync)"
+DIFF_OUT=$(lx 'claude-hop diff')
+echo "$DIFF_OUT"
+[ "$(grep -c 'already in sync' <<<"$DIFF_OUT")" -eq 2 ]
+
+printf '\n\033[32mE2E OK\033[0m\n'

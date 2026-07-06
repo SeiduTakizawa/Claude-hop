@@ -84,6 +84,45 @@ def test_push_refuses_while_running(env, monkeypatch):
     assert "--force" in result.output
 
 
+@requires_rsync
+def test_diff_shows_both_directions(env, not_running):
+    local, remote, _ = env
+    make_session(local, "work/webshop")
+    result = runner.invoke(app, ["diff"])
+    assert result.exit_code == 0
+    assert "Outgoing" in result.output
+    assert "Incoming" in result.output
+    assert encode_path(f"{remote}/work/webshop") in result.output  # would push
+    assert "no sessions on the remote" in result.output  # nothing to pull yet
+
+    runner.invoke(app, ["push"])
+    result = runner.invoke(app, ["diff"])
+    assert result.exit_code == 0
+    assert result.output.count("already in sync") == 2
+
+
+def test_doctor_healthy(env, not_running, monkeypatch, tmp_path):
+    import tempfile
+
+    local, remote, _ = env
+    make_session(local, "work/webshop")
+    (remote / ".claude" / "projects").mkdir(parents=True)
+    fake_tmp = tmp_path / "faketmp"
+    fake_tmp.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tmp))
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert "ready to sync" in result.output
+
+
+def test_doctor_fails_without_config(homes, monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_HOP_CONFIG", str(tmp_path / "missing.toml"))
+    monkeypatch.setenv("CLAUDE_HOP_HOME", str(homes[0]))
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    assert "check(s) failed" in result.output
+
+
 def test_init_local_mode_writes_config(homes, monkeypatch, tmp_path):
     _, remote = homes
     cfg_path = tmp_path / "cfg" / "config.toml"
