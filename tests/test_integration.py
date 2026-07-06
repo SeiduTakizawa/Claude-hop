@@ -176,6 +176,63 @@ def test_pull_dry_run_writes_nothing(homes, not_running):
     assert not (local / ".claude" / sync._PULL_MARKER).exists()
 
 
+def test_push_includes_history_when_enabled(homes, not_running):
+    local, remote = homes
+    make_session(local, "work/webshop")
+    history = local / ".claude" / "history.jsonl"
+    history.write_text(f'{{"display":"do it","project":"{local}/work/webshop"}}\n', encoding="utf-8")
+
+    cfg = local_cfg(remote)
+    cfg.include_history = True
+    report = sync.push(cfg, local_home=local)
+    remote_history = remote / ".claude" / "history.jsonl"
+    assert f"{remote}/work/webshop" in remote_history.read_text(encoding="utf-8")
+    assert "history.jsonl" in report.summary
+
+
+def test_push_skips_history_by_default(homes, not_running):
+    local, remote = homes
+    make_session(local, "work/webshop")
+    (local / ".claude" / "history.jsonl").write_text("{}\n", encoding="utf-8")
+    sync.push(local_cfg(remote), local_home=local)
+    assert not (remote / ".claude" / "history.jsonl").exists()
+
+
+def test_push_and_pull_agents_verbatim(homes, not_running):
+    local, remote = homes
+    make_session(local, "work/webshop")
+    agents = local / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "helper.md").write_text(f"works on {local}/work/webshop\n", encoding="utf-8")
+
+    cfg = local_cfg(remote)
+    cfg.include_agents = True
+    report = sync.push(cfg, local_home=local)
+    out = remote / ".claude" / "agents" / "helper.md"
+    # verbatim: agents are not remapped
+    assert out.read_text(encoding="utf-8") == f"works on {local}/work/webshop\n"
+    assert "agents" in report.summary
+
+    # and back: a new agent on the remote comes home on pull
+    (remote / ".claude" / "agents" / "reviewer.md").write_text("review\n", encoding="utf-8")
+    sync.pull(cfg, local_home=local, confirm=lambda m: True)
+    assert (agents / "reviewer.md").read_text(encoding="utf-8") == "review\n"
+
+
+def test_pull_history_remapped(homes, not_running):
+    local, remote = homes
+    make_session(remote, "work/webshop")
+    (remote / ".claude" / "history.jsonl").write_text(
+        f'{{"project":"{remote}/work/webshop"}}\n', encoding="utf-8"
+    )
+    cfg = local_cfg(remote)
+    cfg.include_history = True
+    sync.pull(cfg, local_home=local)
+    local_history = local / ".claude" / "history.jsonl"
+    assert f"{local}/work/webshop" in local_history.read_text(encoding="utf-8")
+    assert str(remote) not in local_history.read_text(encoding="utf-8")
+
+
 def test_full_round_trip_merge(homes, not_running):
     """Push from A, add a session on B, pull on A: both sides converge."""
     local, remote = homes

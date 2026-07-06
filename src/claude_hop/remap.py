@@ -143,12 +143,13 @@ def remap_tree(src_root: Path, dest_root: Path, mapper: PathMapper) -> None:
             if f.is_dir():
                 out.mkdir(parents=True, exist_ok=True)
             elif f.suffix == ".jsonl":
-                _remap_jsonl_file(f, out, mapper)
+                remap_file(f, out, mapper)
             else:
                 shutil.copy2(f, out)
 
 
-def _remap_jsonl_file(src: Path, out: Path, mapper: PathMapper) -> None:
+def remap_file(src: Path, out: Path, mapper: PathMapper) -> None:
+    """Copy one text file with path strings rewritten, mtime preserved."""
     data = src.read_bytes()
     try:
         text = data.decode("utf-8")

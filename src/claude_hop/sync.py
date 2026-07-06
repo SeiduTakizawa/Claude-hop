@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 
 from claude_hop.config import Config
-from claude_hop.remap import PathMapper, remap_tree
+from claude_hop.remap import PathMapper, remap_file, remap_tree
 from claude_hop.transport import Transport
 
 _PULL_MARKER = ".claude-hop-pulled"
@@ -126,6 +126,7 @@ def push(
         changes = transport.rsync(
             f"{staging}/", transport.remote_projects_arg + "/", dry_run=dry_run
         )
+        changes += _push_extras(cfg, transport, local_home, mapper, Path(tmp), dry_run, log)
     return SyncReport(changes=changes, dry_run=dry_run)
 
 
@@ -173,10 +174,96 @@ def pull(
             dest.mkdir(parents=True, exist_ok=True)
         log("merging into local sessions…")
         changes = transport.rsync(f"{staging}/", f"{dest}/", dry_run=dry_run)
+        changes += _pull_extras(cfg, transport, local_home, mapper, Path(tmp), dry_run, log)
         if not dry_run:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.touch()
     return SyncReport(changes=changes, dry_run=dry_run, backup=backup)
+
+
+def _relabel(lines: list[str], prefix: str) -> list[str]:
+    """Prefix itemized rsync paths so summaries group them sensibly."""
+    out = []
+    for line in lines:
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2:
+            out.append(f"{parts[0]} {prefix}/{parts[1]}")
+    return out
+
+
+def _push_extras(
+    cfg: Config,
+    transport: Transport,
+    local_home: Path,
+    mapper: PathMapper,
+    tmp: Path,
+    dry_run: bool,
+    log: Callable[[str], None],
+) -> list[str]:
+    """Optional [sync] items: history (remapped) and agents/skills (verbatim)."""
+    changes: list[str] = []
+    claude_dir = local_home / ".claude"
+    history = claude_dir / "history.jsonl"
+    if cfg.include_history and history.is_file():
+        log("syncing history…")
+        staged = tmp / "history.jsonl"
+        remap_file(history, staged, mapper)
+        changes += transport.rsync(
+            str(staged),
+            transport.remote_arg(transport.remote_claude_path("history.jsonl")),
+            dry_run=dry_run,
+        )
+    for flag, name in ((cfg.include_agents, "agents"), (cfg.include_skills, "skills")):
+        src = claude_dir / name
+        if flag and src.is_dir():
+            log(f"syncing {name}…")
+            changes += _relabel(
+                transport.rsync(
+                    f"{src}/",
+                    transport.remote_arg(transport.remote_claude_path(name)) + "/",
+                    dry_run=dry_run,
+                ),
+                name,
+            )
+    return changes
+
+
+def _pull_extras(
+    cfg: Config,
+    transport: Transport,
+    local_home: Path,
+    mapper: PathMapper,
+    tmp: Path,
+    dry_run: bool,
+    log: Callable[[str], None],
+) -> list[str]:
+    changes: list[str] = []
+    claude_dir = local_home / ".claude"
+    remote_history = transport.remote_claude_path("history.jsonl")
+    if cfg.include_history and transport.remote_exists(remote_history):
+        log("fetching history…")
+        raw = tmp / "history.raw.jsonl"
+        staged = tmp / "history.jsonl"
+        transport.rsync(transport.remote_arg(remote_history), str(raw))
+        remap_file(raw, staged, mapper)
+        if not dry_run:
+            claude_dir.mkdir(parents=True, exist_ok=True)
+        changes += transport.rsync(
+            str(staged), str(claude_dir / "history.jsonl"), dry_run=dry_run
+        )
+    for flag, name in ((cfg.include_agents, "agents"), (cfg.include_skills, "skills")):
+        remote_dir = transport.remote_claude_path(name)
+        if flag and transport.remote_exists(remote_dir):
+            log(f"fetching {name}…")
+            changes += _relabel(
+                transport.rsync(
+                    transport.remote_arg(remote_dir) + "/",
+                    f"{claude_dir / name}/",
+                    dry_run=dry_run,
+                ),
+                name,
+            )
+    return changes
 
 
 def _make_backup(projects: Path, local_home: Path) -> Path:

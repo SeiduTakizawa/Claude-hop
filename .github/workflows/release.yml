@@ -1,0 +1,20 @@
+# Publishes to PyPI on a GitHub release, via PyPI trusted publishing (OIDC).
+# One-time setup on pypi.org: project "claude-hop" → Publishing → add this
+# repo + workflow ("release.yml") + environment ("pypi") as a trusted publisher.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv build
+      - run: uv publish --trusted-publishing always

@@ -56,6 +56,18 @@ class Transport:
         except FileNotFoundError as e:
             raise TransportError("ssh not found on this machine") from e
 
+    def remote_claude_path(self, name: str) -> str:
+        """Absolute remote path of ~/.claude/<name>."""
+        return f"{self.remote_home}/.claude/{name}"
+
+    def remote_arg(self, path: str) -> str:
+        return self._remote_arg(path)
+
+    def remote_exists(self, path: str) -> bool:
+        if not self.host:
+            return Path(path).exists()
+        return self.run_ssh(f"test -e {shlex.quote(path)}").returncode == 0
+
     def remote_projects_exists(self) -> bool:
         if not self.host:
             return Path(self.remote_projects).is_dir()
