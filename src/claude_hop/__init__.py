@@ -3,7 +3,7 @@
 from claude_hop.config import Config, ConfigError, default_config_path
 from claude_hop.remap import PathMapper, encode_path, remap_tree
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Config",

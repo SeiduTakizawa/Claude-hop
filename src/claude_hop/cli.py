@@ -226,8 +226,14 @@ def _render_report(report: sync_mod.SyncReport, done_msg: str) -> None:
         console.print(f"[dim]local sessions backed up to {report.backup}[/dim]")
 
 
+_PROJECTS_HELP = (
+    "Sync only these projects — paths (e.g. '.') or encoded names from status. Default: all."
+)
+
+
 @app.command()
 def push(
+    projects: list[str] | None = typer.Argument(None, help=_PROJECTS_HELP),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would sync."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Answer yes to prompts."),
     force: bool = typer.Option(False, "--force", help="Sync even if Claude Code is running."),
@@ -237,7 +243,12 @@ def push(
     _refuse_if_running(force)
     try:
         report = sync_mod.push(
-            cfg, local_home=_local_home(), dry_run=dry_run, force=True, log=_log
+            cfg,
+            local_home=_local_home(),
+            projects=projects or None,
+            dry_run=dry_run,
+            force=True,
+            log=_log,
         )
     except _FAILURES as e:
         raise _fail(e) from e
@@ -246,6 +257,7 @@ def push(
 
 @app.command()
 def pull(
+    projects: list[str] | None = typer.Argument(None, help=_PROJECTS_HELP),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would sync."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Answer yes to prompts."),
     force: bool = typer.Option(False, "--force", help="Sync even if Claude Code is running."),
@@ -258,6 +270,7 @@ def pull(
         report = sync_mod.pull(
             cfg,
             local_home=_local_home(),
+            projects=projects or None,
             dry_run=dry_run,
             force=True,
             confirm=confirm,
@@ -269,18 +282,25 @@ def pull(
 
 
 @app.command()
-def diff() -> None:
+def diff(
+    projects: list[str] | None = typer.Argument(None, help=_PROJECTS_HELP),
+) -> None:
     """Show what would sync in each direction, without writing anything."""
     cfg = _load_config()
     home = _local_home()
+    selection = projects or None
     console.print(f"[bold]Outgoing[/bold] (push → {cfg.host or cfg.remote_home})")
     try:
-        _summary_block(sync_mod.push(cfg, local_home=home, dry_run=True, force=True))
+        _summary_block(
+            sync_mod.push(cfg, local_home=home, projects=selection, dry_run=True, force=True)
+        )
     except _FAILURES as e:
         console.print(f"[yellow]~[/yellow] {e}")
     console.print(f"\n[bold]Incoming[/bold] (pull ← {cfg.host or cfg.remote_home})")
     try:
-        _summary_block(sync_mod.pull(cfg, local_home=home, dry_run=True, force=True))
+        _summary_block(
+            sync_mod.pull(cfg, local_home=home, projects=selection, dry_run=True, force=True)
+        )
     except _FAILURES as e:
         console.print(f"[yellow]~[/yellow] {e}")
 

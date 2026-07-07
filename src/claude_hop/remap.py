@@ -127,15 +127,23 @@ class PathMapper:
         return self._enc_re.sub(lambda m: self._enc_table[m.group(0)], name)
 
 
-def remap_tree(src_root: Path, dest_root: Path, mapper: PathMapper) -> None:
+def remap_tree(
+    src_root: Path,
+    dest_root: Path,
+    mapper: PathMapper,
+    only: set[str] | None = None,
+) -> None:
     """Copy a projects tree into ``dest_root``, renaming each project
     directory and rewriting path strings inside every ``.jsonl`` file.
+    ``only`` limits the copy to the named project directories.
 
     ``src_root`` is never modified; mtimes are preserved so a later
     ``rsync -u`` merge keeps whichever side is newer.
     """
     dest_root.mkdir(parents=True, exist_ok=True)
     for proj in sorted(p for p in src_root.iterdir() if p.is_dir()):
+        if only is not None and proj.name not in only:
+            continue
         target = dest_root / mapper.remap_dirname(proj.name)
         target.mkdir(parents=True, exist_ok=True)
         for f in sorted(proj.rglob("*")):

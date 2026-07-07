@@ -12,17 +12,19 @@ Invariants enforced here, not in the CLI:
 
 from __future__ import annotations
 
+import difflib
+import os
 import re
 import subprocess
 import tarfile
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from claude_hop.config import Config
-from claude_hop.remap import PathMapper, remap_file, remap_tree
+from claude_hop.remap import PathMapper, encode_path, remap_file, remap_tree
 from claude_hop.transport import Transport
 
 _PULL_MARKER = ".claude-hop-pulled"
@@ -99,19 +101,62 @@ def _projects_dir(local_home: Path) -> Path:
     return local_home / ".claude" / "projects"
 
 
+def resolve_projects(selectors: Sequence[str]) -> list[str]:
+    """Turn CLI project selectors into encoded project directory names.
+
+    A selector starting with "-" is an encoded name as shown by ``status``;
+    anything else is a filesystem path. Relative paths resolve against the
+    current directory; symlinks are kept as typed, because Claude Code keys
+    sessions by the literal cwd. Order is preserved, duplicates dropped.
+    """
+    names: dict[str, None] = {}
+    for sel in selectors:
+        sel = sel.strip()
+        if not sel:
+            continue
+        if sel.startswith("-"):
+            names.setdefault(sel)
+            continue
+        path = sel if os.path.isabs(sel) else os.path.join(os.getcwd(), sel)
+        names.setdefault(encode_path(os.path.normpath(path)))
+    return list(names)
+
+
+def _unknown_projects_error(missing: list[str], known: set[str]) -> SyncError:
+    parts = []
+    for name in missing:
+        close = difflib.get_close_matches(name, known, n=1)
+        parts.append(name + (f" (did you mean {close[0]}?)" if close else ""))
+    return SyncError(
+        "unknown local project(s): " + "; ".join(parts) + " — run claude-hop status for the list"
+    )
+
+
 def push(
     cfg: Config,
     *,
     local_home: str | Path | None = None,
+    projects: Sequence[str] | None = None,
     dry_run: bool = False,
     force: bool = False,
     log: Callable[[str], None] = _noop,
 ) -> SyncReport:
-    """Remap local sessions into a staging dir and merge them onto the remote."""
+    """Remap local sessions into a staging dir and merge them onto the remote.
+
+    ``projects`` limits the push to the selected projects (paths or encoded
+    names); the optional [sync] extras are skipped when a selection is given.
+    """
     local_home = Path(local_home) if local_home else Path.home()
     src = _projects_dir(local_home)
     if not src.is_dir() or not any(src.iterdir()):
         raise SyncError(f"no local sessions at {src}")
+    only: set[str] | None = None
+    if projects:
+        only = set(resolve_projects(projects))
+        known = {p.name for p in src.iterdir() if p.is_dir()}
+        missing = sorted(only - known)
+        if missing:
+            raise _unknown_projects_error(missing, known)
     if not force and claude_running():
         raise SyncError(RUNNING_MSG)
     mapper = PathMapper.for_push(local_home, cfg.remote_home, cfg.mappings)
@@ -119,14 +164,15 @@ def push(
     with tempfile.TemporaryDirectory(prefix="claude-hop-") as tmp:
         staging = Path(tmp) / "projects"
         log("remapping sessions into staging…")
-        remap_tree(src, staging, mapper)
+        remap_tree(src, staging, mapper, only=only)
         if not dry_run:
             transport.ensure_remote_projects()
         log("syncing to remote…")
         changes = transport.rsync(
             f"{staging}/", transport.remote_projects_arg + "/", dry_run=dry_run
         )
-        changes += _push_extras(cfg, transport, local_home, mapper, Path(tmp), dry_run, log)
+        if only is None:
+            changes += _push_extras(cfg, transport, local_home, mapper, Path(tmp), dry_run, log)
     return SyncReport(changes=changes, dry_run=dry_run)
 
 
@@ -134,18 +180,37 @@ def pull(
     cfg: Config,
     *,
     local_home: str | Path | None = None,
+    projects: Sequence[str] | None = None,
     dry_run: bool = False,
     force: bool = False,
     confirm: Callable[[str], bool] = lambda _msg: True,
     log: Callable[[str], None] = _noop,
 ) -> SyncReport:
-    """Fetch remote sessions, remap them for this machine, and merge them in."""
+    """Fetch remote sessions, remap them for this machine, and merge them in.
+
+    ``projects`` limits the pull to the selected projects, named by their
+    *local* path or encoded name; the [sync] extras are skipped when a
+    selection is given.
+    """
     local_home = Path(local_home) if local_home else Path.home()
     dest = _projects_dir(local_home)
     if not force and claude_running():
         raise SyncError(RUNNING_MSG)
     transport = Transport(cfg.host, cfg.remote_home)
-    if not transport.remote_projects_exists():
+    remote_names: list[str] | None = None
+    if projects:
+        push_mapper = PathMapper.for_push(local_home, cfg.remote_home, cfg.mappings)
+        remote_names = list(
+            dict.fromkeys(push_mapper.remap_dirname(n) for n in resolve_projects(projects))
+        )
+        missing = [
+            n
+            for n in remote_names
+            if not transport.remote_exists(f"{transport.remote_projects}/{n}")
+        ]
+        if missing:
+            raise SyncError("not found on the remote: " + ", ".join(missing))
+    elif not transport.remote_projects_exists():
         raise SyncError(f"no sessions on the remote ({transport.remote_projects} is missing)")
     mapper = PathMapper.for_pull(local_home, cfg.remote_home, cfg.mappings)
     backup: Path | None = None
@@ -154,7 +219,16 @@ def pull(
         staging = Path(tmp) / "projects"
         raw.mkdir()
         log("fetching remote sessions…")
-        transport.rsync(transport.remote_projects_arg + "/", f"{raw}/")
+        if remote_names is None:
+            transport.rsync(transport.remote_projects_arg + "/", f"{raw}/")
+        else:
+            for name in remote_names:
+                target = raw / name
+                target.mkdir(parents=True, exist_ok=True)
+                transport.rsync(
+                    transport.remote_arg(f"{transport.remote_projects}/{name}") + "/",
+                    f"{target}/",
+                )
         log("remapping paths…")
         remap_tree(raw, staging, mapper)
 
@@ -174,7 +248,8 @@ def pull(
             dest.mkdir(parents=True, exist_ok=True)
         log("merging into local sessions…")
         changes = transport.rsync(f"{staging}/", f"{dest}/", dry_run=dry_run)
-        changes += _pull_extras(cfg, transport, local_home, mapper, Path(tmp), dry_run, log)
+        if remote_names is None:
+            changes += _pull_extras(cfg, transport, local_home, mapper, Path(tmp), dry_run, log)
         if not dry_run:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.touch()

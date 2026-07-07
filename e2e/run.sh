@@ -76,4 +76,23 @@ DIFF_OUT=$(lx 'claude-hop diff')
 echo "$DIFF_OUT"
 [ "$(grep -c 'already in sync' <<<"$DIFF_OUT")" -eq 2 ]
 
+step "single-project push (gamma crosses, delta must not)"
+lx 'mkdir -p ~/.claude/projects/-home-tester-work-gamma ~/.claude/projects/-home-tester-work-delta &&
+    printf "%s\n" "{\"cwd\":\"/home/tester/work/gamma\"}" \
+      > ~/.claude/projects/-home-tester-work-gamma/s1.jsonl &&
+    printf "%s\n" "{\"cwd\":\"/home/tester/work/delta\"}" \
+      > ~/.claude/projects/-home-tester-work-delta/s1.jsonl'
+lx 'claude-hop push --yes /home/tester/work/gamma'
+mc 'test -f ~/.claude/projects/-Users-tester-work-gamma/s1.jsonl'
+mc '! test -e ~/.claude/projects/-Users-tester-work-delta'
+echo "ok: single-project push transferred only gamma"
+
+step "single-project pull (epsilon exists only on mac)"
+mc 'mkdir -p ~/.claude/projects/-Users-tester-work-epsilon &&
+    printf "%s\n" "{\"cwd\":\"/Users/tester/work/epsilon\"}" \
+      > ~/.claude/projects/-Users-tester-work-epsilon/s1.jsonl'
+lx 'claude-hop pull --yes /home/tester/work/epsilon'
+lx 'grep -q "\"cwd\":\"/home/tester/work/epsilon\"" ~/.claude/projects/-home-tester-work-epsilon/s1.jsonl'
+echo "ok: single-project pull fetched only epsilon"
+
 printf '\n\033[32mE2E OK\033[0m\n'

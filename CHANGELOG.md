@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-07
+
+### Added
+
+- Single-project sync: `push`, `pull`, and `diff` accept optional project
+  selectors — filesystem paths (`.`, `~/work/webshop`) or encoded names as
+  shown by `status`. Only the selected projects sync; the `[sync]` extras
+  are skipped when a selection is given. Unknown selectors fail with a
+  closest-match suggestion, and selective pull fetches only the requested
+  project directories from the remote.
+
 ## [0.1.0] - 2026-07-07
 
 Initial release.

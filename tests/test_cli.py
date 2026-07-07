@@ -73,6 +73,38 @@ def test_push_then_pull(env, not_running):
     ).exists()
 
 
+@requires_rsync
+def test_push_single_project_cli(env, not_running):
+    local, remote, _ = env
+    make_session(local, "work/webshop")
+    make_session(local, "work/blog")
+    result = runner.invoke(app, ["push", f"{local}/work/webshop"])
+    assert result.exit_code == 0, result.output
+    remote_projects = remote / ".claude" / "projects"
+    assert (remote_projects / encode_path(f"{remote}/work/webshop")).is_dir()
+    assert not (remote_projects / encode_path(f"{remote}/work/blog")).exists()
+
+
+@requires_rsync
+def test_push_unknown_project_cli(env, not_running):
+    local, _, _ = env
+    make_session(local, "work/webshop")
+    result = runner.invoke(app, ["push", f"{local}/work/nope"])
+    assert result.exit_code == 1
+    assert "unknown local project" in result.output
+
+
+@requires_rsync
+def test_diff_single_project_cli(env, not_running):
+    local, remote, _ = env
+    make_session(local, "work/webshop")
+    make_session(local, "work/blog")
+    result = runner.invoke(app, ["diff", f"{local}/work/webshop"])
+    assert result.exit_code == 0
+    assert encode_path(f"{remote}/work/webshop") in result.output
+    assert encode_path(f"{remote}/work/blog") not in result.output
+
+
 def test_push_refuses_while_running(env, monkeypatch):
     local, _, _ = env
     make_session(local, "work/webshop")
