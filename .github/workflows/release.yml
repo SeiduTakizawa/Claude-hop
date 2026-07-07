@@ -1,11 +1,18 @@
-# Publishes to PyPI on a GitHub release, via PyPI trusted publishing (OIDC).
-# One-time setup on pypi.org: project "claude-hop" → Publishing → add this
-# repo + workflow ("release.yml") + environment ("pypi") as a trusted publisher.
+# Publishes to PyPI when a version tag (v*) is pushed, via PyPI trusted
+# publishing (OIDC) — no tokens stored in the repo.
+#
+# One-time setup on pypi.org (before the first tag): log in → your account →
+# Publishing → "Add a new pending publisher" with:
+#   PyPI project name: claude-hop
+#   Owner:             SeiduTakizawa
+#   Repository:        Claude-hop
+#   Workflow name:     release.yml
+#   Environment name:  pypi
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
 
 jobs:
   pypi:
