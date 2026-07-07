@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-07
+
 ### Added
 
 - Multiple remotes: named `[remotes.<name>]` config tables with optional
