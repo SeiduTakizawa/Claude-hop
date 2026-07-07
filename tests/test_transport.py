@@ -1,7 +1,72 @@
 import pytest
 
-from claude_hop.transport import Transport, TransportError
+from claude_hop.transport import (
+    PROBE_DNS,
+    PROBE_NO_AUTH,
+    PROBE_TIMEOUT,
+    PROBE_UNREACHABLE,
+    Transport,
+    TransportError,
+    classify_ssh_error,
+)
 from conftest import requires_rsync
+
+# ------------------------------------------- ssh error classification
+# stderr strings below are captured from real OpenSSH clients
+
+
+def test_classify_permission_denied_is_no_auth():
+    result = classify_ssh_error(
+        "alice@mac.local", "alice@mac.local: Permission denied (publickey,password).\n"
+    )
+    assert result.verdict == PROBE_NO_AUTH
+    assert "ssh-copy-id alice@mac.local" in result.detail
+    assert "key-based auth" in result.detail
+
+
+def test_classify_too_many_auth_failures_is_no_auth():
+    result = classify_ssh_error(
+        "mac", "Received disconnect from 10.0.0.5 port 22:2: Too many authentication failures\n"
+    )
+    assert result.verdict == PROBE_NO_AUTH
+
+
+def test_classify_connect_timeout():
+    result = classify_ssh_error(
+        "192.0.2.1", "ssh: connect to host 192.0.2.1 port 22: Connection timed out\n"
+    )
+    assert result.verdict == PROBE_TIMEOUT
+    assert "timed out" in result.detail
+
+
+def test_classify_dns_failure():
+    result = classify_ssh_error(
+        "nosuch.local",
+        "ssh: Could not resolve hostname nosuch.local: Name or service not known\n",
+    )
+    assert result.verdict == PROBE_DNS
+    assert "resolve" in result.detail
+
+
+def test_classify_connection_refused_is_unreachable():
+    result = classify_ssh_error(
+        "mac", "ssh: connect to host mac port 22: Connection refused\n"
+    )
+    assert result.verdict == PROBE_UNREACHABLE
+    assert "Connection refused" in result.detail
+
+
+def test_classify_no_route_is_unreachable():
+    result = classify_ssh_error(
+        "10.9.9.9", "ssh: connect to host 10.9.9.9 port 22: No route to host\n"
+    )
+    assert result.verdict == PROBE_UNREACHABLE
+
+
+def test_classify_empty_stderr_falls_back():
+    result = classify_ssh_error("mac", "")
+    assert result.verdict == PROBE_UNREACHABLE
+    assert "mac" in result.detail
 
 
 def test_remote_projects_path():

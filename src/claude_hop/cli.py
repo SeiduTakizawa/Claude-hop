@@ -23,7 +23,15 @@ from claude_hop.banner import get_version, show_banner
 from claude_hop.config import Config, ConfigError, Remote, resolve_remote
 from claude_hop.remap import PathMapper
 from claude_hop.sync import SyncError
-from claude_hop.transport import Transport, TransportError, local_rsync_available
+from claude_hop.transport import (
+    BATCH_SSH_OPTS,
+    PROBE_NO_AUTH,
+    PROBE_OK,
+    TransportError,
+    classify_ssh_error,
+    local_rsync_available,
+    probe_ssh,
+)
 
 app = typer.Typer(
     help="Sync Claude Code sessions between machines over SSH — no cloud.",
@@ -212,20 +220,30 @@ def _suggest_name(host: str) -> str:
 
 
 def _probe_remote(host: str) -> tuple[str, bool, str]:
-    """Returns (detected_home, remote_has_rsync, error). error="" on success."""
+    """Returns (detected_home, remote_has_rsync, error). error="" on success.
+
+    BatchMode: the wizard's probe must never hang on an invisible password
+    prompt — an auth failure is reported as exactly that, with the fix."""
     try:
         r = subprocess.run(
-            ["ssh", host, 'echo "$HOME"; command -v rsync || echo __NO_RSYNC__'],
+            [
+                "ssh",
+                *BATCH_SSH_OPTS,
+                "-o",
+                "ConnectTimeout=10",
+                host,
+                'echo "$HOME"; command -v rsync || echo __NO_RSYNC__',
+            ],
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=30,
         )
     except subprocess.TimeoutExpired:
         return "", False, "connection timed out"
     except FileNotFoundError:
         return "", False, "ssh not found on this machine"
     if r.returncode != 0:
-        return "", False, r.stderr.strip() or f"ssh exited with {r.returncode}"
+        return "", False, classify_ssh_error(host, r.stderr).detail
     lines = [line.strip() for line in r.stdout.splitlines() if line.strip()]
     home = lines[0] if lines else ""
     has_rsync = len(lines) > 1 and lines[1] != "__NO_RSYNC__"
@@ -663,12 +681,11 @@ def _probe_remotes(cfg: Config) -> dict[str, str]:
     def probe(remote: Remote) -> str:
         if not remote.host:
             return "local"
-        try:
-            result = Transport(remote.host, remote.home).run_ssh("true", timeout=8)
-        except TransportError:
-            return "[red]✗ unreachable[/red]"
-        if result.returncode == 0:
+        result = probe_ssh(remote.host)
+        if result.verdict == PROBE_OK:
             return "[green]✓ reachable[/green]"
+        if result.verdict == PROBE_NO_AUTH:
+            return "[yellow]✗ no auth[/yellow]"
         return "[red]✗ unreachable[/red]"
 
     if not cfg.remotes:

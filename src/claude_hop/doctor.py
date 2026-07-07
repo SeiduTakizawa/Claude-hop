@@ -19,7 +19,7 @@ from claude_hop import config as config_mod
 from claude_hop import sync
 from claude_hop.config import Config, ConfigError, Remote, resolve_remote
 from claude_hop.remap import PathMapper
-from claude_hop.transport import Transport, TransportError
+from claude_hop.transport import PROBE_OK, Transport, probe_ssh
 
 OK = "ok"
 WARN = "warn"
@@ -112,16 +112,11 @@ def _check_remote(checks: list[Check], remote: Remote, suffix: str = "") -> None
     if not remote.host:
         checks.append(Check("ssh" + suffix, OK, "local-path mode — no SSH involved"))
     else:
-        try:
-            r = transport.run_ssh("echo __claude_hop_ok__", timeout=15)
-        except TransportError as e:
-            checks.append(Check("ssh" + suffix, FAIL, str(e)))
+        result = probe_ssh(remote.host, timeout=10)
+        if result.verdict != PROBE_OK:
+            checks.append(Check("ssh" + suffix, FAIL, result.detail))
             return
-        if r.returncode != 0 or "__claude_hop_ok__" not in r.stdout:
-            detail = r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "unreachable"
-            checks.append(Check("ssh" + suffix, FAIL, f"cannot reach {remote.host!r}: {detail}"))
-            return
-        checks.append(Check("ssh" + suffix, OK, f"{remote.host!r} reachable"))
+        checks.append(Check("ssh" + suffix, OK, result.detail))
 
         rv = transport.run_ssh("rsync --version 2>/dev/null | head -n1")
         if rv.returncode != 0 or not rv.stdout.strip():

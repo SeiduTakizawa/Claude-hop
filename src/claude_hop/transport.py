@@ -21,6 +21,61 @@ class TransportError(Exception):
     """rsync/ssh invocation failed or is impossible."""
 
 
+# probe verdicts
+PROBE_OK = "reachable"
+PROBE_NO_AUTH = "no-auth"
+PROBE_TIMEOUT = "timeout"
+PROBE_DNS = "dns"
+PROBE_UNREACHABLE = "unreachable"
+
+# BatchMode so a probe can never sit on an invisible password prompt;
+# accept-new so first contact reaches the auth layer instead of dying at
+# host-key verification.
+BATCH_SSH_OPTS = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+]
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    verdict: str
+    detail: str
+
+
+def probe_ssh(host: str, *, timeout: int = 8) -> ProbeResult:
+    """Reach the host over SSH without ever prompting, and say what
+    actually happened — auth failure is not a timeout."""
+    cmd = ["ssh", *BATCH_SSH_OPTS, "-o", f"ConnectTimeout={timeout}", host, "true"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 15)
+    except subprocess.TimeoutExpired:
+        return ProbeResult(PROBE_TIMEOUT, f"connection to {host!r} timed out")
+    except FileNotFoundError:
+        return ProbeResult(PROBE_UNREACHABLE, "ssh not found on this machine")
+    if r.returncode == 0:
+        return ProbeResult(PROBE_OK, f"{host!r} reachable")
+    return classify_ssh_error(host, r.stderr)
+
+
+def classify_ssh_error(host: str, stderr: str) -> ProbeResult:
+    """Map ssh's stderr to a verdict with the fix that actually applies."""
+    lowered = stderr.lower()
+    if "permission denied" in lowered or "too many authentication failures" in lowered:
+        return ProbeResult(
+            PROBE_NO_AUTH,
+            f"host reachable, but key-based auth isn't set up — run: ssh-copy-id {host}",
+        )
+    if "timed out" in lowered:
+        return ProbeResult(PROBE_TIMEOUT, f"connection to {host!r} timed out")
+    if "could not resolve hostname" in lowered or "name or service not known" in lowered:
+        return ProbeResult(PROBE_DNS, f"could not resolve host {host!r}")
+    last = stderr.strip().splitlines()[-1] if stderr.strip() else f"cannot reach {host!r}"
+    return ProbeResult(PROBE_UNREACHABLE, last)
+
+
 @dataclass(frozen=True)
 class Transport:
     host: str  # SSH host or alias; "" = local-path mode

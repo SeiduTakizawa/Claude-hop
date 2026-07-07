@@ -17,6 +17,17 @@ mc() { docker compose exec -T -u tester mac bash -c "$1"; }
 step "build and start containers"
 docker compose up -d --build --quiet-pull
 
+step "probe before key auth: must say no-auth, never timeout"
+lx 'until (echo > /dev/tcp/mac/22) 2>/dev/null; do sleep 1; done'  # wait for sshd only
+lx 'mkdir -p ~/.config/claude-hop &&
+    printf "[remote]\nhost = \"mac\"\nhome = \"/Users/tester\"\n" \
+      > ~/.config/claude-hop/config.toml'
+PROBE_OUT=$(lx 'claude-hop remotes list --check 2>/dev/null')
+echo "$PROBE_OUT" | grep -q "no auth"
+DOCTOR_OUT=$(lx 'claude-hop doctor 2>&1 || true')
+echo "$DOCTOR_OUT" | grep -q "ssh-copy-id"
+echo "ok: keyless probe reports no-auth with the ssh-copy-id fix"
+
 step "set up key auth linux -> mac"
 lx 'mkdir -p ~/.ssh && chmod 700 ~/.ssh &&
     [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/id_ed25519'
