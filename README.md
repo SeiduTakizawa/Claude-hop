@@ -22,7 +22,21 @@ curl -sSL https://raw.githubusercontent.com/SeiduTakizawa/Claude-hop/main/instal
 ```
 
 Requirements: Python ≥ 3.11 on this machine; `sshd` and `rsync` on the other
-one (key-based SSH auth recommended). Works Linux ↔ macOS in both directions.
+one (key-based SSH auth recommended).
+
+## Supported platforms
+
+Any pair of Unix-shaped machines, in either direction: **Linux ↔ macOS**,
+**Linux ↔ Linux**, **macOS ↔ macOS**. The remap isn't tied to `/home` vs
+`/Users` — it maps *your home here* to *your home there*, whatever they are
+(identical homes on both sides work too; the remap just becomes a no-op and
+you keep the merge/safety machinery).
+
+**Windows** is supported **via WSL**: inside WSL you have a real Linux home,
+`rsync`, and `sshd`, so claude-hop works there like on any Linux box — it
+syncs the Claude Code you run *inside* WSL. Native (non-WSL) Windows is not
+supported: Claude Code encodes `C:\` project paths differently and there's
+no native rsync. If you need it, open an issue.
 
 ## The problem it solves
 
