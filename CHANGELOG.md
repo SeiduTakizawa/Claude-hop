@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `claude-hop upgrade` on uv installs now bypasses uv's index cache
+  (`uv tool upgrade --reinstall`); right after a release the cache could
+  report "Nothing to upgrade" for a version PyPI already serves.
+
 ## [0.3.0] - 2026-07-07
 
 ### Added

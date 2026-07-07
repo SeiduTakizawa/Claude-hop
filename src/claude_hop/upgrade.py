@@ -49,7 +49,12 @@ def detect_upgrade_command() -> list[str] | None:
         return None
     prefix = str(Path(sys.prefix))
     if "/uv/tools/" in prefix and shutil.which("uv"):
-        return ["uv", "tool", "upgrade", "claude-hop"]
+        # --reinstall implies --refresh: uv's index cache can lag right
+        # after a release, making a plain `uv tool upgrade` report "Nothing
+        # to upgrade" for a version PyPI already serves. We only run this
+        # after confirming a newer release exists, so it never reinstalls
+        # needlessly.
+        return ["uv", "tool", "upgrade", "--reinstall", "claude-hop"]
     if "/pipx/" in prefix and shutil.which("pipx"):
         return ["pipx", "upgrade", "claude-hop"]
     if importlib.util.find_spec("pip") is not None:

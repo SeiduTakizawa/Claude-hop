@@ -48,7 +48,13 @@ def test_detect_uv_tool_install(monkeypatch, tmp_path):
         sys, "prefix", str(tmp_path / "share" / "uv" / "tools" / "claude-hop")
     )
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    assert upgrade.detect_upgrade_command() == ["uv", "tool", "upgrade", "claude-hop"]
+    assert upgrade.detect_upgrade_command() == [
+        "uv",
+        "tool",
+        "upgrade",
+        "--reinstall",
+        "claude-hop",
+    ]
 
 
 def test_detect_pipx_install(monkeypatch, tmp_path):
