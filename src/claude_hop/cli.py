@@ -17,6 +17,7 @@ from rich.table import Table
 from claude_hop import __version__
 from claude_hop import config as config_mod
 from claude_hop import sync as sync_mod
+from claude_hop.banner import get_version, show_banner
 from claude_hop.config import Config, ConfigError
 from claude_hop.remap import PathMapper
 from claude_hop.sync import SyncError
@@ -82,7 +83,7 @@ def _log(msg: str) -> None:
 @app.command()
 def init() -> None:
     """Interactive setup: SSH host, connection test, remote-home detection."""
-    console.print("[bold]claude-hop setup[/bold]")
+    show_banner(console, get_version())
     path = _config_path()
     if path.exists():
         typer.confirm(f"{path} exists — overwrite?", abort=True)
@@ -328,6 +329,40 @@ def doctor() -> None:
         console.print(f"[red]✗ {failed} check(s) failed[/red]")
         raise typer.Exit(1)
     console.print("[green]✓ ready to sync[/green]")
+
+
+@app.command()
+def upgrade() -> None:
+    """Upgrade claude-hop to the latest release."""
+    from claude_hop import upgrade as upgrade_mod
+
+    current = get_version()
+    with console.status("checking PyPI for the latest release…"):
+        latest = upgrade_mod.latest_version()
+    if latest is None:
+        console.print("[yellow]⚠[/yellow] could not reach PyPI — attempting the upgrade anyway")
+    elif not upgrade_mod.is_newer(latest, current):
+        console.print(f"[green]✓[/green] already up to date (v{current})")
+        return
+    else:
+        console.print(f"upgrading v{current} → v{latest}")
+
+    cmd = upgrade_mod.detect_upgrade_command()
+    if cmd is None:
+        if upgrade_mod.dev_checkout_root() is not None:
+            raise _fail(SyncError("this is a development checkout — upgrade with git pull"))
+        raise _fail(
+            SyncError(
+                "couldn't tell how claude-hop was installed — upgrade with your installer: "
+                "uv tool upgrade claude-hop | pipx upgrade claude-hop | "
+                "pip install -U claude-hop"
+            )
+        )
+    console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        raise _fail(SyncError(f"upgrade command failed (exit {result.returncode})"))
+    console.print("[green]✓[/green] done — [bold]claude-hop --version[/bold] to confirm")
 
 
 def main() -> None:

@@ -70,6 +70,7 @@ then pull reproduces your files byte for byte.
 | `claude-hop push` | Send local sessions to the remote machine. |
 | `claude-hop pull` | Fetch remote sessions and merge them in. |
 | `claude-hop doctor` | Environment checks: SSH, rsync versions, config, running Claude Code, stale staging dirs. |
+| `claude-hop upgrade` | Upgrade claude-hop itself to the latest release (works for uv, pipx, and pip installs). |
 
 `push` and `pull` accept `--dry-run` (`-n`), `--yes` (`-y`), and `--force`.
 

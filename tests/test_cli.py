@@ -155,6 +155,24 @@ def test_doctor_fails_without_config(homes, monkeypatch, tmp_path):
     assert "check(s) failed" in result.output
 
 
+def test_upgrade_already_up_to_date(monkeypatch):
+    from claude_hop import banner, upgrade
+
+    monkeypatch.setattr(upgrade, "latest_version", lambda: banner.get_version())
+    result = runner.invoke(app, ["upgrade"])
+    assert result.exit_code == 0
+    assert "already up to date" in result.output
+
+
+def test_upgrade_refuses_dev_checkout(monkeypatch):
+    from claude_hop import upgrade
+
+    monkeypatch.setattr(upgrade, "latest_version", lambda: "999.0.0")
+    result = runner.invoke(app, ["upgrade"])
+    assert result.exit_code == 1
+    assert "git pull" in result.output
+
+
 def test_init_local_mode_writes_config(homes, monkeypatch, tmp_path):
     _, remote = homes
     cfg_path = tmp_path / "cfg" / "config.toml"

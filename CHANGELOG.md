@@ -6,6 +6,14 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- ASCII-art startup banner on `claude-hop init` (terminal ≥ 80 columns
+  only; plain one-line header when piped or narrow).
+- `claude-hop upgrade`: self-upgrade to the latest PyPI release, detecting
+  whether the tool was installed via uv, pipx, or pip; refuses on
+  development checkouts.
+
 ## [0.2.0] - 2026-07-07
 
 ### Added
