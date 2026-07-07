@@ -1,4 +1,7 @@
-# claude-hop
+<p align="center">
+  <img src="https://raw.githubusercontent.com/SeiduTakizawa/Claude-hop/main/.github/banner.png"
+       alt="claude-hop — sync Claude Code sessions between machines" width="100%">
+</p>
 
 Sync Claude Code sessions between two machines over SSH — no cloud storage,
 just rsync between your own boxes. Start a session on your Linux desktop,
