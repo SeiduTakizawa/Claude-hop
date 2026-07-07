@@ -79,6 +79,22 @@ def test_mtime_preserved_on_rewritten_jsonl(tmp_path):
     assert int(out.stat().st_mtime) == stamp
 
 
+def test_mtime_preserved_full_precision_through_remap(tmp_path):
+    """The local remap step must not lose a single nanosecond — rsync -u
+    merges depend on rewritten files carrying the ORIGINAL mtime."""
+    src = make_projects(tmp_path)
+    stamp_ns = 1_600_000_000_123_456_789
+    rewritten = src / "-home-alice-work-webshop" / "session-1.jsonl"
+    verbatim = src / "-home-alice-work-webshop" / "notes.txt"
+    os.utime(rewritten, ns=(stamp_ns, stamp_ns))
+    os.utime(verbatim, ns=(stamp_ns, stamp_ns))
+    dest = tmp_path / "staging"
+    remap_tree(src, dest, PathMapper.for_push(LOCAL, REMOTE))
+    out = dest / "-Users-alice-work-webshop"
+    assert (out / "session-1.jsonl").stat().st_mtime_ns == stamp_ns
+    assert (out / "notes.txt").stat().st_mtime_ns == stamp_ns
+
+
 def test_invalid_utf8_jsonl_copied_byte_identical(tmp_path):
     src = tmp_path / "projects"
     proj = src / "-home-alice-work-webshop"

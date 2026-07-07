@@ -11,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -141,6 +142,7 @@ def _check_remote(checks: list[Check], remote: Remote, suffix: str = "") -> None
             )
             return
         checks.append(Check("remote home" + suffix, OK, remote.home))
+        _check_clock_skew(checks, transport, suffix)
 
     if transport.remote_projects_exists():
         checks.append(Check("remote sessions" + suffix, OK, transport.remote_projects))
@@ -152,6 +154,33 @@ def _check_remote(checks: list[Check], remote: Remote, suffix: str = "") -> None
                 f"{transport.remote_projects} does not exist yet — created on first push",
             )
         )
+
+
+_MAX_SKEW_SECONDS = 30
+
+
+def _check_clock_skew(checks: list[Check], transport: Transport, suffix: str = "") -> None:
+    """Merge is newer-file-wins, so clocks are load-bearing: skewed clocks
+    can make a real update look older than the stale copy."""
+    r = transport.run_ssh("date +%s", timeout=10)
+    if r.returncode != 0:
+        return  # reachability problems are already reported by the ssh check
+    try:
+        remote_epoch = int(r.stdout.strip())
+    except ValueError:
+        return
+    skew = abs(int(time.time()) - remote_epoch)
+    if skew > _MAX_SKEW_SECONDS:
+        checks.append(
+            Check(
+                "clock skew" + suffix,
+                WARN,
+                f"clock skew of {skew}s with {transport.host!r} — "
+                "newer-wins merging may skip updates",
+            )
+        )
+    else:
+        checks.append(Check("clock skew" + suffix, OK, f"{skew}s"))
 
 
 def _check_claude_running(checks: list[Check]) -> None:

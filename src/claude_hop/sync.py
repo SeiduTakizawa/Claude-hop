@@ -64,6 +64,7 @@ class SyncReport:
     changes: list[str]  # rsync --itemize-changes lines
     dry_run: bool
     backup: Path | None = None
+    skipped: list[str] = field(default_factory=list)  # dest was newer (--verbose)
     summary: dict[str, ChangeSummary] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -95,6 +96,20 @@ def summarize_changes(changes: list[str]) -> dict[str, ChangeSummary]:
 
 def _noop(_msg: str) -> None:
     pass
+
+
+def _skipped_newer(transport: Transport, src: str, dst: str) -> list[str]:
+    """Files a just-finished -u merge skipped because dst was newer.
+
+    Run AFTER the real transfer: a dry-run with the same flags minus -u
+    would now transfer exactly the files -u refused (everything else was
+    just synced and compares equal)."""
+    skipped = []
+    for line in transport.rsync(src, dst, dry_run=True, newer_wins=False):
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2 and len(parts[0]) >= 2 and parts[0][1] == "f":
+            skipped.append(parts[1])
+    return skipped
 
 
 def _projects_dir(local_home: Path) -> Path:
@@ -140,6 +155,7 @@ def push(
     projects: Sequence[str] | None = None,
     dry_run: bool = False,
     force: bool = False,
+    verbose: bool = False,
     log: Callable[[str], None] = _noop,
 ) -> SyncReport:
     """Remap local sessions into a staging dir and merge them onto the remote.
@@ -174,9 +190,12 @@ def push(
         changes = transport.rsync(
             f"{staging}/", transport.remote_projects_arg + "/", dry_run=dry_run
         )
+        skipped: list[str] = []
+        if verbose and not dry_run:
+            skipped = _skipped_newer(transport, f"{staging}/", transport.remote_projects_arg + "/")
         if only is None:
             changes += _push_extras(cfg, transport, local_home, mapper, Path(tmp), dry_run, log)
-    return SyncReport(changes=changes, dry_run=dry_run)
+    return SyncReport(changes=changes, dry_run=dry_run, skipped=skipped)
 
 
 def pull(
@@ -187,6 +206,7 @@ def pull(
     projects: Sequence[str] | None = None,
     dry_run: bool = False,
     force: bool = False,
+    verbose: bool = False,
     confirm: Callable[[str], bool] = lambda _msg: True,
     log: Callable[[str], None] = _noop,
 ) -> SyncReport:
@@ -257,12 +277,15 @@ def pull(
             dest.mkdir(parents=True, exist_ok=True)
         log("merging into local sessions…")
         changes = transport.rsync(f"{staging}/", f"{dest}/", dry_run=dry_run)
+        skipped: list[str] = []
+        if verbose and not dry_run:
+            skipped = _skipped_newer(transport, f"{staging}/", f"{dest}/")
         if remote_names is None:
             changes += _pull_extras(cfg, transport, local_home, mapper, Path(tmp), dry_run, log)
         if not dry_run:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.touch()
-    return SyncReport(changes=changes, dry_run=dry_run, backup=backup)
+    return SyncReport(changes=changes, dry_run=dry_run, backup=backup, skipped=skipped)
 
 
 def _relabel(lines: list[str], prefix: str) -> list[str]:

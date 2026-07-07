@@ -56,6 +56,25 @@ def test_push_dry_run(env, not_running):
 
 
 @requires_rsync
+def test_push_verbose_lists_skipped_files(env, not_running):
+    import os
+
+    local, remote, _ = env
+    f = make_session(local, "work/webshop")
+    os.utime(f, (1_600_000_000, 1_600_000_000))
+    target = remote / ".claude" / "projects" / encode_path(f"{remote}/work/webshop")
+    target.mkdir(parents=True)
+    newer = target / "s1.jsonl"
+    newer.write_text("remote newer\n", encoding="utf-8")
+    os.utime(newer, (1_700_000_000, 1_700_000_000))
+
+    result = runner.invoke(app, ["push", "--verbose"])
+    assert result.exit_code == 0, result.output
+    assert "skipped" in result.output
+    assert "s1.jsonl" in result.output
+
+
+@requires_rsync
 def test_push_then_pull(env, not_running):
     local, remote, _ = env
     make_session(local, "work/webshop")

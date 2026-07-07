@@ -235,6 +235,63 @@ def test_pull_history_remapped(homes, not_running):
     assert str(remote) not in local_history.read_text(encoding="utf-8")
 
 
+def test_resumed_session_update_lands_on_second_pull(homes, not_running):
+    """The field scenario: pull, resume on the remote (newer mtime + new
+    content), pull again — the update must land, with its mtime intact."""
+    local, remote = homes
+    remote_file = make_session(remote, "work/webshop")
+    os.utime(remote_file, (OLD, OLD))
+    sync.pull(local_cfg(remote), local_home=local, confirm=lambda m: True)
+
+    local_file = (
+        local / ".claude" / "projects" / encode_path(f"{local}/work/webshop") / "s1.jsonl"
+    )
+    assert abs(local_file.stat().st_mtime - OLD) < 1  # 1s window: fs granularity varies
+
+    # "resume" on the remote: new content, newer mtime
+    remote_file.write_text(
+        f'{{"cwd":"{remote}/work/webshop","msg":"resumed over there"}}\n', encoding="utf-8"
+    )
+    os.utime(remote_file, (NEW, NEW))
+
+    sync.pull(local_cfg(remote), local_home=local, confirm=lambda m: True)
+    text = local_file.read_text(encoding="utf-8")
+    assert "resumed over there" in text
+    assert f"{local}/work/webshop" in text  # remapped on the way in
+    assert abs(local_file.stat().st_mtime - NEW) < 1
+
+
+def test_verbose_reports_exact_skipped_newer_set(homes, not_running):
+    """--verbose must list exactly the files -u skipped, no more, no less."""
+    local, remote = homes
+    for name in ("kept.jsonl", "updated.jsonl", "created.jsonl"):
+        f = make_session(local, "work/webshop", name=name)
+        os.utime(f, (OLD, OLD))
+    target = remote_project(remote, "work/webshop")
+    target.mkdir(parents=True)
+    # remote already has a NEWER kept.jsonl (must be skipped and reported)
+    # and an OLDER updated.jsonl (must be overwritten, not reported)
+    newer = target / "kept.jsonl"
+    newer.write_text("remote is newer\n", encoding="utf-8")
+    os.utime(newer, (NEW, NEW))
+    older = target / "updated.jsonl"
+    older.write_text("remote is older\n", encoding="utf-8")
+    os.utime(older, (OLD - 1000, OLD - 1000))
+
+    report = sync.push(local_cfg(remote), local_home=local, verbose=True)
+    project = encode_path(f"{remote}/work/webshop")
+    assert report.skipped == [f"{project}/kept.jsonl"]  # exact
+    assert newer.read_text(encoding="utf-8") == "remote is newer\n"  # untouched
+    assert "remote is older" not in older.read_text(encoding="utf-8")  # replaced
+
+
+def test_verbose_off_reports_nothing_skipped(homes, not_running):
+    local, remote = homes
+    make_session(local, "work/webshop")
+    report = sync.push(local_cfg(remote), local_home=local)
+    assert report.skipped == []
+
+
 def test_full_round_trip_merge(homes, not_running):
     """Push from A, add a session on B, pull on A: both sides converge."""
     local, remote = homes

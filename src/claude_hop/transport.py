@@ -86,12 +86,18 @@ class Transport:
                 f"could not create {self.remote_projects} on {self.host}: {r.stderr.strip()}"
             )
 
-    def rsync(self, src: str, dst: str, *, dry_run: bool = False) -> list[str]:
+    def rsync(
+        self, src: str, dst: str, *, dry_run: bool = False, newer_wins: bool = True
+    ) -> list[str]:
         """Merge-copy src into dst; returns rsync's itemized change lines.
 
         ``-u`` keeps whichever file is newer; nothing is ever deleted.
+        ``newer_wins=False`` drops ``-u`` — used only for the --verbose
+        dry-run that surfaces files a real merge skipped.
         """
-        cmd = ["rsync", "-au", "--itemize-changes", "--exclude", "*.tmp"]
+        cmd = ["rsync", "-a", "--itemize-changes", "--exclude", "*.tmp"]
+        if newer_wins:
+            cmd.append("-u")
         if dry_run:
             cmd.append("--dry-run")
         cmd += [src, dst]

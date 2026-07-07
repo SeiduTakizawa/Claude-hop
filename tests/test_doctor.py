@@ -126,6 +126,58 @@ def test_doctor_unknown_remote_raises_like_other_commands(homes, tmp_path, quiet
         doctor.run_checks(write_cfg(tmp_path, remote), local, "nope")
 
 
+class FakeSshTransport:
+    """Duck-typed stand-in for Transport in clock-skew tests."""
+
+    host = "mac.local"
+
+    def __init__(self, stdout, returncode=0):
+        self._stdout = stdout
+        self._returncode = returncode
+
+    def run_ssh(self, command, timeout=10):
+        import subprocess
+
+        return subprocess.CompletedProcess([], self._returncode, stdout=self._stdout, stderr="")
+
+
+def test_clock_skew_ok_when_in_sync():
+    import time
+
+    checks = []
+    doctor._check_clock_skew(checks, FakeSshTransport(str(int(time.time()))))
+    assert checks[0].name == "clock skew"
+    assert checks[0].status == doctor.OK
+
+
+def test_clock_skew_warns_beyond_threshold():
+    import time
+
+    checks = []
+    doctor._check_clock_skew(checks, FakeSshTransport(str(int(time.time()) - 120)))
+    assert checks[0].status == doctor.WARN
+    assert "newer-wins merging may skip updates" in checks[0].detail
+    assert "clock skew of 1" in checks[0].detail  # ~120s, allow 119-121
+
+
+def test_clock_skew_silent_on_ssh_failure():
+    checks = []
+    doctor._check_clock_skew(checks, FakeSshTransport("", returncode=255))
+    assert checks == []
+
+
+def test_clock_skew_silent_on_garbage_output():
+    checks = []
+    doctor._check_clock_skew(checks, FakeSshTransport("not-a-number\n"))
+    assert checks == []
+
+
+def test_local_remote_has_no_clock_skew_check(homes, tmp_path, quiet_env):
+    local, remote = homes
+    checks = by_name(doctor.run_checks(write_cfg(tmp_path, remote), local))
+    assert "clock skew" not in checks
+
+
 def test_stale_temp_dirs_warn(homes, tmp_path, quiet_env):
     local, remote = homes
     (quiet_env / "claude-hop-abc123").mkdir()

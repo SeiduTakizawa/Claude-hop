@@ -373,6 +373,12 @@ def _render_report(report: sync_mod.SyncReport, done_msg: str) -> None:
     if report.dry_run:
         console.print("[cyan]dry run — nothing was written[/cyan]")
     _summary_block(report)
+    if report.skipped:
+        console.print(
+            f"[yellow]⚠ {len(report.skipped)} file(s) skipped — destination copy is newer:[/yellow]"
+        )
+        for path in report.skipped:
+            console.print(f"  [dim]{path}[/dim]")
     if report.summary and not report.dry_run:
         console.print(done_msg)
     if report.backup:
@@ -400,6 +406,9 @@ def push(
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would sync."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Answer yes to prompts."),
     force: bool = typer.Option(False, "--force", help="Sync even if Claude Code is running."),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="List files skipped because the destination was newer."
+    ),
 ) -> None:
     """Send local sessions to a remote machine (merge, newer file wins)."""
     cfg = _load_config()
@@ -419,6 +428,7 @@ def push(
                 projects=selectors or None,
                 dry_run=dry_run,
                 force=True,
+                verbose=verbose,
                 log=_prefixed_log(name),
             ),
         )
@@ -432,6 +442,7 @@ def push(
             projects=selectors or None,
             dry_run=dry_run,
             force=True,
+            verbose=verbose,
             log=_log,
         )
     except _FAILURES as e:
@@ -448,6 +459,9 @@ def pull(
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would sync."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Answer yes to prompts."),
     force: bool = typer.Option(False, "--force", help="Sync even if Claude Code is running."),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v", help="List files skipped because the destination was newer."
+    ),
 ) -> None:
     """Fetch a remote's sessions and merge them in (merge, newer file wins)."""
     cfg = _load_config()
@@ -468,6 +482,7 @@ def pull(
                 projects=selectors or None,
                 dry_run=dry_run,
                 force=True,
+                verbose=verbose,
                 confirm=confirm,
                 log=_prefixed_log(name),
             ),
@@ -482,6 +497,7 @@ def pull(
             projects=selectors or None,
             dry_run=dry_run,
             force=True,
+            verbose=verbose,
             confirm=confirm,
             log=_log,
         )

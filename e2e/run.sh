@@ -76,6 +76,15 @@ lx 'grep -q "\"cwd\":\"/home/tester/other/beta\"" ~/.claude/projects/-home-teste
 lx '! grep -rq "/Users/tester" ~/.claude/projects'
 echo "ok: pull merged and remapped, no /Users/tester leakage"
 
+step "second round trip: a session resumed on mac must come back"
+mc 'printf "%s\n" "{\"cwd\":\"/Users/tester/work/webshop\",\"msg\":\"resumed on mac\"}" \
+      >> ~/.claude/projects/-Users-tester-work-webshop/s2.jsonl'
+lx 'claude-hop pull --yes'
+lx 'grep -q "resumed on mac" ~/.claude/projects/-home-tester-work-webshop/s2.jsonl'
+lx 'grep -q "{\"cwd\":\"/home/tester/work/webshop\",\"msg\":\"resumed on mac\"}" \
+      ~/.claude/projects/-home-tester-work-webshop/s2.jsonl'
+echo "ok: resumed-session update arrived remapped on the second pull"
+
 step "claude-hop diff (both directions should be in sync)"
 DIFF_OUT=$(lx 'claude-hop diff')
 echo "$DIFF_OUT"
