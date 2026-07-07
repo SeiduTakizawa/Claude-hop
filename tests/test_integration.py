@@ -180,7 +180,9 @@ def test_push_includes_history_when_enabled(homes, not_running):
     local, remote = homes
     make_session(local, "work/webshop")
     history = local / ".claude" / "history.jsonl"
-    history.write_text(f'{{"display":"do it","project":"{local}/work/webshop"}}\n', encoding="utf-8")
+    history.write_text(
+        f'{{"display":"do it","project":"{local}/work/webshop"}}\n', encoding="utf-8"
+    )
 
     cfg = local_cfg(remote)
     cfg.include_history = True

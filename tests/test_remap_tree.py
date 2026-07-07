@@ -46,7 +46,8 @@ def test_push_remaps_dirs_and_jsonl(tmp_path):
     assert (webshop / "session-1.jsonl").read_text(encoding="utf-8") == SESSION_REMAPPED
     assert (webshop / "subagents" / "agent.jsonl").read_text(encoding="utf-8") == SESSION_REMAPPED
     # non-jsonl files are copied verbatim
-    assert (webshop / "notes.txt").read_text(encoding="utf-8") == "verbatim /home/alice/work/webshop"
+    notes = (webshop / "notes.txt").read_text(encoding="utf-8")
+    assert notes == "verbatim /home/alice/work/webshop"
     # projects outside every mapping keep their name and contents
     scratch = (dest / "-tmp-scratch" / "s.jsonl").read_text(encoding="utf-8")
     assert scratch == '{"cwd":"/tmp/scratch"}\n'
@@ -113,4 +114,5 @@ def test_specific_mapping_applied_in_tree(tmp_path):
     remap_tree(src, dest, PathMapper.for_push(LOCAL, REMOTE, mappings))
     webshop = dest / "-Users-alice-projects-webshop"
     assert webshop.is_dir()
-    assert "/Users/alice/projects/webshop" in (webshop / "session-1.jsonl").read_text(encoding="utf-8")
+    session = (webshop / "session-1.jsonl").read_text(encoding="utf-8")
+    assert "/Users/alice/projects/webshop" in session
