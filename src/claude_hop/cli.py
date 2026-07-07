@@ -6,8 +6,10 @@ Environment hooks (used by tests and the e2e harness):
 - ``CLAUDE_HOP_HOME`` — treat this directory as the local home
 """
 
+import difflib
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import typer
@@ -171,7 +173,11 @@ def _probe_remote(host: str) -> tuple[str, bool, str]:
 
 
 @app.command()
-def status() -> None:
+def status(
+    remote: str | None = typer.Argument(
+        None, help="Remote to compare against (optional when only one is configured)."
+    ),
+) -> None:
     """Show local projects and the remapped name each gets on the remote."""
     cfg = _load_config()
     local_home = _local_home()
@@ -179,13 +185,13 @@ def status() -> None:
     if not projects.is_dir():
         raise _fail(SyncError(f"no local sessions at {projects}"))
     try:
-        target = resolve_remote(cfg, None)
+        target = resolve_remote(cfg, remote)
         mapper = PathMapper.for_push(local_home, target.home, cfg.merged_mappings(target.name))
     except _FAILURES as e:
         raise _fail(e) from e
     back = mapper.inverted()
 
-    table = Table(title=f"Local projects → {target.host or target.home}")
+    table = Table(title=f"Local projects → {target.name} ({target.host or target.home})")
     table.add_column("Project", overflow="fold")
     table.add_column("Sessions", justify="right")
     table.add_column("On remote", overflow="fold")
@@ -223,6 +229,71 @@ def _refuse_if_running(force: bool) -> None:
         raise typer.Exit(1)
 
 
+def _split_remote_args(cfg: Config, args: list[str]) -> tuple[str | None, list[str]]:
+    """The first positional is a remote iff it exactly matches a configured
+    remote name; everything else is a project selector."""
+    if not args:
+        return None, []
+    first = args[0]
+    if first in cfg.remotes:
+        if (Path.cwd() / first).is_dir():
+            err_console.print(
+                f"[dim]note: {first!r} was treated as a remote name — "
+                f"use ./{first} to select the project of that name[/dim]"
+            )
+        return first, args[1:]
+    _guard_remote_typos(cfg, args)
+    return None, args
+
+
+def _guard_remote_typos(cfg: Config, selectors: list[str]) -> None:
+    """A bare word that names no directory and is close to a remote name is
+    almost certainly a typo — fail loudly instead of syncing nothing."""
+    for sel in selectors:
+        if sel.startswith("-") or "/" in sel or sel in (".", ".."):
+            continue
+        if (Path.cwd() / sel).exists():
+            continue
+        close = difflib.get_close_matches(sel, list(cfg.remotes), n=1)
+        if close:
+            raise _fail(
+                SyncError(f"no project matching {sel!r} — did you mean remote {close[0]!r}?")
+            )
+
+
+def _prefixed_log(name: str) -> Callable[[str], None]:
+    return lambda msg: console.print(f"[dim]• ({name})[/dim] {msg}")
+
+
+def _run_all(
+    cfg: Config, verb: str, operation: Callable[[str], "sync_mod.SyncReport"]
+) -> None:
+    """Run a sync against every remote, keep going on failure, summarize."""
+    if not cfg.remotes:
+        raise _fail(ConfigError("no remotes configured — run: claude-hop init"))
+    failures = 0
+    table = Table(title=f"{verb} — all remotes")
+    table.add_column("Remote")
+    table.add_column("Result", overflow="fold")
+    table.add_column("Files", justify="right")
+    for name in cfg.remotes:
+        console.print(f"[bold]— {name}[/bold]")
+        try:
+            report = operation(name)
+        except _FAILURES as e:
+            failures += 1
+            console.print(f"[red]✗[/red] {e}")
+            table.add_row(name, f"[red]✗ {e}[/red]", "—")
+            continue
+        _summary_block(report)
+        result = "[cyan]dry run[/cyan]" if report.dry_run else "[green]✓ synced[/green]"
+        table.add_row(name, result, str(report.total_files))
+    console.print(table)
+    if failures:
+        console.print(f"[red]✗ {failures} remote(s) failed[/red]")
+        raise typer.Exit(1)
+
+
 def _summary_block(report: sync_mod.SyncReport) -> None:
     if not report.summary:
         console.print("[green]✓[/green] already in sync — nothing to transfer")
@@ -248,26 +319,57 @@ def _render_report(report: sync_mod.SyncReport, done_msg: str) -> None:
         console.print(f"[dim]local sessions backed up to {report.backup}[/dim]")
 
 
-_PROJECTS_HELP = (
-    "Sync only these projects — paths (e.g. '.') or encoded names from status. Default: all."
+_ARGS_HELP = (
+    "Optional remote name (when several are configured), then project selectors — "
+    "paths (e.g. '.') or encoded names from status. Default: all projects."
 )
+_ALL_HELP = "Sync every configured remote; keep going if one fails."
+
+
+def _both_remote_and_all(cfg: Config, args: list[str]) -> None:
+    if args and args[0] in cfg.remotes:
+        raise _fail(SyncError(f"give a remote name ({args[0]!r}) or --all, not both"))
 
 
 @app.command()
 def push(
-    projects: list[str] | None = typer.Argument(None, help=_PROJECTS_HELP),
+    args: list[str] | None = typer.Argument(
+        None, metavar="[REMOTE] [PROJECTS]...", help=_ARGS_HELP
+    ),
+    all_remotes: bool = typer.Option(False, "--all", help=_ALL_HELP),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would sync."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Answer yes to prompts."),
     force: bool = typer.Option(False, "--force", help="Sync even if Claude Code is running."),
 ) -> None:
-    """Send local sessions to the remote machine (merge, newer file wins)."""
+    """Send local sessions to a remote machine (merge, newer file wins)."""
     cfg = _load_config()
     _refuse_if_running(force)
+    home = _local_home()
+    if all_remotes:
+        _both_remote_and_all(cfg, args or [])
+        selectors = args or []
+        _guard_remote_typos(cfg, selectors)
+        _run_all(
+            cfg,
+            "push",
+            lambda name: sync_mod.push(
+                cfg,
+                remote=name,
+                local_home=home,
+                projects=selectors or None,
+                dry_run=dry_run,
+                force=True,
+                log=_prefixed_log(name),
+            ),
+        )
+        return
+    remote, selectors = _split_remote_args(cfg, args or [])
     try:
         report = sync_mod.push(
             cfg,
-            local_home=_local_home(),
-            projects=projects or None,
+            remote=remote,
+            local_home=home,
+            projects=selectors or None,
             dry_run=dry_run,
             force=True,
             log=_log,
@@ -279,20 +381,45 @@ def push(
 
 @app.command()
 def pull(
-    projects: list[str] | None = typer.Argument(None, help=_PROJECTS_HELP),
+    args: list[str] | None = typer.Argument(
+        None, metavar="[REMOTE] [PROJECTS]...", help=_ARGS_HELP
+    ),
+    all_remotes: bool = typer.Option(False, "--all", help=_ALL_HELP),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would sync."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Answer yes to prompts."),
     force: bool = typer.Option(False, "--force", help="Sync even if Claude Code is running."),
 ) -> None:
-    """Fetch remote sessions and merge them in (merge, newer file wins)."""
+    """Fetch a remote's sessions and merge them in (merge, newer file wins)."""
     cfg = _load_config()
     _refuse_if_running(force)
+    home = _local_home()
     confirm = (lambda _msg: True) if yes else (lambda msg: typer.confirm(msg, default=True))
+    if all_remotes:
+        _both_remote_and_all(cfg, args or [])
+        selectors = args or []
+        _guard_remote_typos(cfg, selectors)
+        _run_all(
+            cfg,
+            "pull",
+            lambda name: sync_mod.pull(
+                cfg,
+                remote=name,
+                local_home=home,
+                projects=selectors or None,
+                dry_run=dry_run,
+                force=True,
+                confirm=confirm,
+                log=_prefixed_log(name),
+            ),
+        )
+        return
+    remote, selectors = _split_remote_args(cfg, args or [])
     try:
         report = sync_mod.pull(
             cfg,
-            local_home=_local_home(),
-            projects=projects or None,
+            remote=remote,
+            local_home=home,
+            projects=selectors or None,
             dry_run=dry_run,
             force=True,
             confirm=confirm,
@@ -305,39 +432,63 @@ def pull(
 
 @app.command()
 def diff(
-    projects: list[str] | None = typer.Argument(None, help=_PROJECTS_HELP),
+    args: list[str] | None = typer.Argument(
+        None, metavar="[REMOTE] [PROJECTS]...", help=_ARGS_HELP
+    ),
 ) -> None:
     """Show what would sync in each direction, without writing anything."""
     cfg = _load_config()
     home = _local_home()
-    selection = projects or None
+    remote, selectors = _split_remote_args(cfg, args or [])
     try:
-        target = resolve_remote(cfg, None)
+        target = resolve_remote(cfg, remote)
     except _FAILURES as e:
         raise _fail(e) from e
-    where = target.host or target.home
+    selection = selectors or None
+    where = f"{target.name} ({target.host or target.home})"
     console.print(f"[bold]Outgoing[/bold] (push → {where})")
     try:
         _summary_block(
-            sync_mod.push(cfg, local_home=home, projects=selection, dry_run=True, force=True)
+            sync_mod.push(
+                cfg,
+                remote=target.name,
+                local_home=home,
+                projects=selection,
+                dry_run=True,
+                force=True,
+            )
         )
     except _FAILURES as e:
         console.print(f"[yellow]~[/yellow] {e}")
     console.print(f"\n[bold]Incoming[/bold] (pull ← {where})")
     try:
         _summary_block(
-            sync_mod.pull(cfg, local_home=home, projects=selection, dry_run=True, force=True)
+            sync_mod.pull(
+                cfg,
+                remote=target.name,
+                local_home=home,
+                projects=selection,
+                dry_run=True,
+                force=True,
+            )
         )
     except _FAILURES as e:
         console.print(f"[yellow]~[/yellow] {e}")
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    remote: str | None = typer.Argument(
+        None, help="Check a single remote (default: every configured remote)."
+    ),
+) -> None:
     """Check SSH, rsync, config, and local state for problems."""
     from claude_hop import doctor as doctor_mod
 
-    checks = doctor_mod.run_checks(_state["config_path"], _local_home())
+    try:
+        checks = doctor_mod.run_checks(_state["config_path"], _local_home(), remote)
+    except _FAILURES as e:
+        raise _fail(e) from e
     icons = {
         doctor_mod.OK: "[green]✓[/green]",
         doctor_mod.WARN: "[yellow]⚠[/yellow]",

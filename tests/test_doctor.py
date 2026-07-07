@@ -4,6 +4,7 @@ import pytest
 
 from claude_hop import config as config_mod
 from claude_hop import doctor, sync
+from claude_hop.config import Config, Remote
 from conftest import local_cfg, make_session
 
 
@@ -85,6 +86,44 @@ def test_claude_running_warns(homes, tmp_path, quiet_env, monkeypatch):
     checks = by_name(doctor.run_checks(write_cfg(tmp_path, remote), local))
     assert checks["claude code"].status == doctor.WARN
     assert "exit" in checks["claude code"].detail
+
+
+def write_cfg2(tmp_path, home_a, home_b):
+    cfg = Config(
+        remotes={
+            "a": Remote(name="a", host="", home=str(home_a)),
+            "b": Remote(name="b", host="", home=str(home_b)),
+        }
+    )
+    path = tmp_path / "config.toml"
+    config_mod.save(cfg, path)
+    return path
+
+
+def test_doctor_checks_every_remote_by_default(homes, tmp_path, quiet_env):
+    local, remote = homes
+    second = tmp_path / "second-home"
+    second.mkdir()
+    checks = doctor.run_checks(write_cfg2(tmp_path, remote, second), local)
+    names = [c.name for c in checks]
+    assert "ssh (a)" in names and "ssh (b)" in names
+    assert "mappings (a)" in names and "mappings (b)" in names
+
+
+def test_doctor_single_remote_by_name(homes, tmp_path, quiet_env):
+    local, remote = homes
+    second = tmp_path / "second-home"
+    second.mkdir()
+    checks = doctor.run_checks(write_cfg2(tmp_path, remote, second), local, "b")
+    names = [c.name for c in checks]
+    assert "ssh" in names  # no suffix for a single target
+    assert "ssh (a)" not in names and "ssh (b)" not in names
+
+
+def test_doctor_unknown_remote_raises_like_other_commands(homes, tmp_path, quiet_env):
+    local, remote = homes
+    with pytest.raises(config_mod.ConfigError, match=r"unknown remote 'nope'.*available"):
+        doctor.run_checks(write_cfg(tmp_path, remote), local, "nope")
 
 
 def test_stale_temp_dirs_warn(homes, tmp_path, quiet_env):

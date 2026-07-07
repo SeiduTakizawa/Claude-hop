@@ -75,7 +75,10 @@ class Transport:
 
     def ensure_remote_projects(self) -> None:
         if not self.host:
-            Path(self.remote_projects).mkdir(parents=True, exist_ok=True)
+            try:
+                Path(self.remote_projects).mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise TransportError(f"could not create {self.remote_projects}: {e}") from e
             return
         r = self.run_ssh(f"mkdir -p {shlex.quote(self.remote_projects)}")
         if r.returncode != 0:

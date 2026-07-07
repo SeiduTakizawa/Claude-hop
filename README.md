@@ -80,11 +80,14 @@ then pull reproduces your files byte for byte.
 sync everything:
 
 ```sh
-claude-hop push .                          # just the project you're standing in
-claude-hop pull ~/work/webshop             # one project, by path
-claude-hop push -home-alice-work-webshop   # by encoded name, as shown in `status`
-claude-hop diff . ~/work/blog              # several at once
+claude-hop push .                             # just the project you're standing in
+claude-hop pull ~/work/webshop                # one project, by path
+claude-hop push -- -home-alice-work-webshop   # by encoded name, as shown in `status`
+claude-hop diff . ~/work/blog                 # several at once
 ```
+
+Encoded names start with a dash, so pass them after the standard `--`
+separator — everything after `--` is a selector, never an option.
 
 When a selection is given, only those projects sync and the optional `[sync]`
 extras (history/agents/skills) are skipped.
