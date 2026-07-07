@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/SeiduTakizawa/Claude-hop/main/.github/banner.png"
+  <img src=".github/banner.png"
        alt="claude-hop — sync Claude Code sessions between machines" width="100%">
 </p>
 
