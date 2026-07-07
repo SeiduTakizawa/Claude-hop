@@ -16,7 +16,10 @@ LEGACY_TEXT = '[remote]\nhost = ""\nhome = "{home}"\n'
 def cfg_env(monkeypatch, tmp_path):
     """Writes a config with the given remotes and wires the env; returns paths."""
     cfg_path = tmp_path / "config.toml"
+    isolated_home = tmp_path / "isolated-home"
+    isolated_home.mkdir()
     monkeypatch.setenv("CLAUDE_HOP_CONFIG", str(cfg_path))
+    monkeypatch.setenv("CLAUDE_HOP_HOME", str(isolated_home))
     monkeypatch.setenv("COLUMNS", "300")
 
     def write(remotes: dict[str, str]):
@@ -183,6 +186,37 @@ def test_rename_refuses_existing_target(cfg_env):
     result = runner.invoke(app, ["remotes", "rename", "mac", "pad"])
     assert result.exit_code == 1
     assert "already exists" in result.output
+
+
+def test_add_offers_mapping_for_outside_home_projects(cfg_env, tmp_path):
+    write, cfg_path, _ = cfg_env
+    mac, pad = homes_for(tmp_path, "mac", "pad")
+    write({"mac": mac})
+    # an outside-home project in the isolated home store
+    store = tmp_path / "isolated-home" / ".claude" / "projects"
+    proj = store / "-mnt-c-Users-tasos-proj"
+    proj.mkdir(parents=True)
+    (proj / "s1.jsonl").write_text('{"cwd":"/mnt/c/Users/tasos/proj"}\n', encoding="utf-8")
+
+    # host (empty), local dir, map? (default yes), target (accept default)
+    result = runner.invoke(app, ["remotes", "add", "pad"], input=f"\n{pad}\n\n\n")
+    assert result.exit_code == 0, result.output
+    cfg = config_mod.load(cfg_path)
+    assert cfg.remotes["pad"].mappings == {"/mnt/c/Users/tasos/proj": f"{pad}/proj"}
+
+
+def test_add_mapping_offer_declined(cfg_env, tmp_path):
+    write, cfg_path, _ = cfg_env
+    mac, pad = homes_for(tmp_path, "mac", "pad")
+    write({"mac": mac})
+    store = tmp_path / "isolated-home" / ".claude" / "projects"
+    proj = store / "-mnt-c-Users-tasos-proj"
+    proj.mkdir(parents=True)
+    (proj / "s1.jsonl").write_text('{"cwd":"/mnt/c/Users/tasos/proj"}\n', encoding="utf-8")
+
+    result = runner.invoke(app, ["remotes", "add", "pad"], input=f"\n{pad}\nn\n")
+    assert result.exit_code == 0, result.output
+    assert config_mod.load(cfg_path).remotes["pad"].mappings == {}
 
 
 # ---------------------------------------------------------------- migrate

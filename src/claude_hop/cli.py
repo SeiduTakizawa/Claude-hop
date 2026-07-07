@@ -18,6 +18,7 @@ from rich.table import Table
 
 from claude_hop import __version__
 from claude_hop import config as config_mod
+from claude_hop import projects as projects_mod
 from claude_hop import sync as sync_mod
 from claude_hop.banner import get_version, show_banner
 from claude_hop.config import Config, ConfigError, Remote, resolve_remote
@@ -207,7 +208,49 @@ def _wizard_remote(name: str | None) -> Remote:
     else:
         console.print("[yellow]⚠[/yellow] rsync not found locally — install it before syncing")
 
-    return Remote(name=name, host=host, home=remote_home.rstrip("/"))
+    remote = Remote(name=name, host=host, home=remote_home.rstrip("/"))
+    _offer_outside_home_mappings(remote)
+    return remote
+
+
+def _offer_outside_home_mappings(remote: Remote) -> None:
+    """After home detection: projects outside the local home need a mapping
+    prefix, or push/pull will refuse them — offer to add one now."""
+    local_home = _local_home()
+    try:
+        mapper = PathMapper.for_push(local_home, remote.home, {})
+    except ValueError:
+        return
+    report = projects_mod.find_outside_home(
+        local_home / ".claude" / "projects", local_home, mapper
+    )
+    if not report:
+        return
+    console.print(
+        f"[yellow]⚠ {len(report.names)} local project(s) live outside your home — "
+        "the home remap can't place them on this remote.[/yellow]"
+    )
+    for prefix in projects_mod.cluster_prefixes(report.validated.values()):
+        default_target = f"{remote.home}/{os.path.basename(prefix)}"
+        if not typer.confirm(f'Map "{prefix}" onto the remote now?', default=True):
+            continue
+        target = typer.prompt("  remote path for this prefix", default=default_target).strip()
+        if target.startswith("/") and target.rstrip("/") != remote.home:
+            remote.mappings[prefix] = target.rstrip("/")
+            added = remote.mappings[prefix]
+            console.print(f'[green]✓[/green] mapping added: "{prefix}" = "{added}"')
+        else:
+            console.print(
+                "[yellow]⚠ skipped — target must be absolute and not the remote home[/yellow]"
+            )
+    for name in report.undetermined:
+        console.print(
+            f"[dim]{name}: path could not be determined — map it manually if needed[/dim]"
+        )
+    for name in report.ambiguous:
+        console.print(
+            f"[dim]{name}: session cwd doesn't match the directory name — map it manually[/dim]"
+        )
 
 
 def _suggest_name(host: str) -> str:
@@ -280,7 +323,22 @@ def status(
         mapped = mapper.remap_dirname(proj.name)
         notes = []
         if mapped == proj.name:
-            notes.append("[dim]unchanged[/dim]")
+            if projects_mod.is_outside_home(proj.name, local_home, mapper):
+                path, ambiguous = projects_mod.recover_path(proj)
+                if path is not None:
+                    notes.append(r"[yellow]⚠ outside home — needs a \[mappings] prefix[/yellow]")
+                elif ambiguous:
+                    notes.append(
+                        "[yellow]⚠ outside home — session cwd doesn't match the "
+                        "directory name (ambiguous)[/yellow]"
+                    )
+                else:
+                    notes.append(
+                        "[yellow]⚠ outside home — path could not be determined[/yellow]"
+                    )
+                problems += 1
+            else:
+                notes.append("[dim]unchanged[/dim]")
         if back.remap_dirname(mapped) != proj.name:
             notes.append("[yellow]⚠ ambiguous: won't round-trip[/yellow]")
             problems += 1
@@ -387,6 +445,23 @@ def _summary_block(report: sync_mod.SyncReport) -> None:
     console.print(f"[green]✓[/green] {verb} {report.total_files} file(s)")
 
 
+def _render_git_advisory(report: sync_mod.SyncReport) -> None:
+    if not report.git:
+        return
+    err_console.print(
+        "[yellow]⚠ session context will arrive before the code does — "
+        "remember to git push:[/yellow]"
+    )
+    table = Table()
+    table.add_column("Project", overflow="fold")
+    table.add_column("Dirty")
+    table.add_column("Ahead")
+    for _name, state in report.git:
+        ahead = "no upstream" if state.ahead is None else str(state.ahead)
+        table.add_row(state.path, "yes" if state.dirty else "—", ahead)
+    err_console.print(table)
+
+
 def _render_report(report: sync_mod.SyncReport, done_msg: str) -> None:
     if report.dry_run:
         console.print("[cyan]dry run — nothing was written[/cyan]")
@@ -399,6 +474,7 @@ def _render_report(report: sync_mod.SyncReport, done_msg: str) -> None:
             console.print(f"  [dim]{path}[/dim]")
     if report.summary and not report.dry_run:
         console.print(done_msg)
+    _render_git_advisory(report)
     if report.backup:
         console.print(f"[dim]local sessions backed up to {report.backup}[/dim]")
 
@@ -427,11 +503,15 @@ def push(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="List files skipped because the destination was newer."
     ),
+    quiet_git: bool = typer.Option(
+        False, "--quiet-git", help="Skip the unpushed-git-work advisory."
+    ),
 ) -> None:
     """Send local sessions to a remote machine (merge, newer file wins)."""
     cfg = _load_config()
     _refuse_if_running(force)
     home = _local_home()
+    check_git = not (quiet_git or yes)
     if all_remotes:
         _both_remote_and_all(cfg, args or [])
         selectors = args or []
@@ -447,6 +527,7 @@ def push(
                 dry_run=dry_run,
                 force=True,
                 verbose=verbose,
+                check_git=check_git,
                 log=_prefixed_log(name),
             ),
         )
@@ -461,6 +542,7 @@ def push(
             dry_run=dry_run,
             force=True,
             verbose=verbose,
+            check_git=check_git,
             log=_log,
         )
     except _FAILURES as e:

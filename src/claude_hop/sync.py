@@ -23,7 +23,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from claude_hop.config import Config, resolve_remote
+from claude_hop.config import Config, Remote, resolve_remote
+from claude_hop.projects import (
+    GitState,
+    OutsideReport,
+    cluster_prefixes,
+    find_outside_home,
+    git_warnings,
+)
 from claude_hop.remap import PathMapper, encode_path, remap_file, remap_tree
 from claude_hop.transport import Transport
 
@@ -65,6 +72,7 @@ class SyncReport:
     dry_run: bool
     backup: Path | None = None
     skipped: list[str] = field(default_factory=list)  # dest was newer (--verbose)
+    git: list[tuple[str, GitState]] = field(default_factory=list)  # advisory
     summary: dict[str, ChangeSummary] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -96,6 +104,36 @@ def summarize_changes(changes: list[str]) -> dict[str, ChangeSummary]:
 
 def _noop(_msg: str) -> None:
     pass
+
+
+def _outside_home_error(
+    report: OutsideReport, remote: Remote, local_home: Path, *, pull: bool
+) -> SyncError:
+    """Refusal message with a ready-to-paste mapping snippet built from
+    VALIDATED paths only; unvalidated projects are listed, never suggested."""
+    verb = "pull" if pull else "push"
+    lines = [
+        f"{len(report.names)} project(s) are outside the home directory — "
+        f"the generic home remap can't place them for {remote.name!r}:"
+    ]
+    for name in sorted(report.validated):
+        lines.append(f"  {name}")
+    for name in report.undetermined:
+        lines.append(f"  {name}  (path could not be determined)")
+    for name in report.ambiguous:
+        lines.append(f"  {name}  (session cwd doesn't match the directory name — resolve manually)")
+    if report.validated:
+        lines += ["", "add a mapping, e.g.:", ""]
+        lines.append(f"[remotes.{remote.name}.mappings]")
+        for prefix in cluster_prefixes(report.validated.values()):
+            base = os.path.basename(prefix)
+            if pull:  # validated paths are remote-side: map a local prefix to them
+                lines.append(f'"{str(local_home).rstrip("/")}/{base}" = "{prefix}"')
+            else:  # validated paths are local: land them under the remote home
+                lines.append(f'"{prefix}" = "{remote.home.rstrip("/")}/{base}"')
+        lines.append("")
+    lines.append(f"or re-run with --force to {verb} them unchanged.")
+    return SyncError("\n".join(lines))
 
 
 def _skipped_newer(transport: Transport, src: str, dst: str) -> list[str]:
@@ -156,6 +194,7 @@ def push(
     dry_run: bool = False,
     force: bool = False,
     verbose: bool = False,
+    check_git: bool = False,
     log: Callable[[str], None] = _noop,
 ) -> SyncReport:
     """Remap local sessions into a staging dir and merge them onto the remote.
@@ -179,6 +218,10 @@ def push(
     if not force and claude_running():
         raise SyncError(RUNNING_MSG)
     mapper = PathMapper.for_push(local_home, target.home, cfg.merged_mappings(target.name))
+    if not force:
+        outside = find_outside_home(src, local_home, mapper, only)
+        if outside:
+            raise _outside_home_error(outside, target, local_home, pull=False)
     transport = Transport(target.host, target.home)
     with tempfile.TemporaryDirectory(prefix="claude-hop-") as tmp:
         staging = Path(tmp) / "projects"
@@ -195,7 +238,10 @@ def push(
             skipped = _skipped_newer(transport, f"{staging}/", transport.remote_projects_arg + "/")
         if only is None:
             changes += _push_extras(cfg, transport, local_home, mapper, Path(tmp), dry_run, log)
-    return SyncReport(changes=changes, dry_run=dry_run, skipped=skipped)
+    git_notes: list[tuple[str, GitState]] = []
+    if check_git and not dry_run:
+        git_notes = git_warnings(src, only)
+    return SyncReport(changes=changes, dry_run=dry_run, skipped=skipped, git=git_notes)
 
 
 def pull(
@@ -258,6 +304,10 @@ def pull(
                     transport.remote_arg(f"{transport.remote_projects}/{name}") + "/",
                     f"{target}/",
                 )
+        if not force:
+            outside = find_outside_home(raw, local_home, mapper)
+            if outside:
+                raise _outside_home_error(outside, target, local_home, pull=True)
         log("remapping paths…")
         remap_tree(raw, staging, mapper)
 

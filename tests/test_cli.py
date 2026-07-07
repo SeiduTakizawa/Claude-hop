@@ -37,6 +37,21 @@ def test_status_lists_projects_and_mapping(env, not_running):
     assert encode_path(f"{remote}/work/webshop") in result.output
 
 
+def test_status_flags_outside_home_projects(env, not_running):
+    local, _, _ = env
+    make_session(local, "work/webshop")
+    d = local / ".claude" / "projects" / "-mnt-c-Users-tasos-proj"
+    d.mkdir(parents=True)
+    (d / "s1.jsonl").write_text('{"cwd":"/mnt/c/Users/tasos/proj"}\n', encoding="utf-8")
+    (local / ".claude" / "projects" / "-opt-nothing").mkdir(parents=True)
+
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "outside home" in result.output
+    assert "needs a [mappings] prefix" in result.output
+    assert "path could not be determined" in result.output
+
+
 def test_status_without_config(homes, monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_HOP_CONFIG", str(tmp_path / "missing.toml"))
     monkeypatch.setenv("CLAUDE_HOP_HOME", str(homes[0]))
@@ -376,9 +391,10 @@ def test_upgrade_refuses_dev_checkout(monkeypatch):
 
 
 def test_init_local_mode_writes_config(homes, monkeypatch, tmp_path):
-    _, remote = homes
+    local, remote = homes
     cfg_path = tmp_path / "cfg" / "config.toml"
     monkeypatch.setenv("CLAUDE_HOP_CONFIG", str(cfg_path))
+    monkeypatch.setenv("CLAUDE_HOP_HOME", str(local))
     # prompts: host (empty), local dir, remote name (accept default "local")
     result = runner.invoke(app, ["init"], input=f"\n{remote}\n\n")
     assert result.exit_code == 0, result.output
@@ -405,6 +421,7 @@ def test_legacy_config_prints_migrate_hint(homes, monkeypatch, tmp_path):
 
 def test_init_refuses_relative_home(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_HOP_CONFIG", str(tmp_path / "config.toml"))
+    monkeypatch.setenv("CLAUDE_HOP_HOME", str(tmp_path))
     result = runner.invoke(app, ["init"], input="\nnot/absolute\n")
     assert result.exit_code == 1
     assert "absolute" in result.output

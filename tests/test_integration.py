@@ -292,6 +292,98 @@ def test_verbose_off_reports_nothing_skipped(homes, not_running):
     assert report.skipped == []
 
 
+def outside_project(home, cwd, name=None):
+    """A project whose decoded path is NOT under the given home."""
+    d = home / ".claude" / "projects" / (name or encode_path(cwd))
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "s1.jsonl").write_text(f'{{"cwd":"{cwd}"}}\n', encoding="utf-8")
+    return d
+
+
+def test_push_refuses_outside_home_with_snippet(homes, not_running):
+    local, remote = homes
+    make_session(local, "work/webshop")
+    outside_project(local, "/mnt/c/Users/tasos/proj-a")
+    outside_project(local, "/mnt/c/Users/tasos/proj-b")
+    with pytest.raises(sync.SyncError) as err:
+        sync.push(local_cfg(remote), local_home=local)
+    message = str(err.value)
+    assert "outside the home directory" in message
+    assert "-mnt-c-Users-tasos-proj-a" in message
+    # ready-to-paste snippet with the computed common prefix
+    assert "[remotes.default.mappings]" in message
+    assert f'"/mnt/c/Users/tasos" = "{remote}/tasos"' in message
+    assert not (remote / ".claude").exists()  # nothing transferred
+
+
+def test_push_refusal_reports_undetermined_and_ambiguous(homes, not_running):
+    local, remote = homes
+    make_session(local, "work/webshop")
+    empty = local / ".claude" / "projects" / "-opt-nothing"
+    empty.mkdir(parents=True)
+    outside_project(local, "/wrong/place", name="-opt-mismatched")
+    with pytest.raises(sync.SyncError) as err:
+        sync.push(local_cfg(remote), local_home=local)
+    message = str(err.value)
+    assert "-opt-nothing  (path could not be determined)" in message
+    assert "-opt-mismatched  (session cwd doesn't match" in message
+    # no snippet: nothing validated, and unvalidated cwd must never be suggested
+    assert "[remotes.default.mappings]" not in message
+
+
+def test_push_outside_home_force_overrides(homes, not_running):
+    local, remote = homes
+    outside_project(local, "/mnt/c/Users/tasos/proj")
+    sync.push(local_cfg(remote), local_home=local, force=True)
+    assert (remote / ".claude" / "projects" / "-mnt-c-Users-tasos-proj").is_dir()
+
+
+def test_push_with_covering_mapping_is_not_refused(homes, not_running):
+    local, remote = homes
+    outside_project(local, "/mnt/c/Users/tasos/proj")
+    mappings = {"/mnt/c/Users/tasos": f"{remote}/tasos"}
+    sync.push(local_cfg(remote, mappings), local_home=local)
+    out = remote / ".claude" / "projects" / encode_path(f"{remote}/tasos/proj") / "s1.jsonl"
+    assert session_cwd(out) == f"{remote}/tasos/proj"
+
+
+def test_pull_refuses_outside_home_on_remote(homes, not_running):
+    local, remote = homes
+    outside_project(remote, "/mnt/c/Users/tasos/proj")
+    with pytest.raises(sync.SyncError) as err:
+        sync.pull(local_cfg(remote), local_home=local)
+    message = str(err.value)
+    assert "outside the home directory" in message
+    # pull direction: mapping suggestion is local prefix -> remote prefix
+    assert f'"{local}/proj" = "/mnt/c/Users/tasos/proj"' in message
+
+
+def test_push_git_advisory_reports_dirty_repo(homes, not_running, tmp_path):
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    if _shutil.which("git") is None:
+        pytest.skip("git not installed")
+    local, remote = homes
+    repo = local / "work" / "webshop"
+    repo.mkdir(parents=True)
+    env = {"HOME": str(local), "PATH": "/usr/bin:/bin:/usr/local/bin",
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    _subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, env=env)
+    (repo / "f.txt").write_text("uncommitted\n", encoding="utf-8")
+    make_session(local, "work/webshop")
+
+    report = sync.push(local_cfg(remote), local_home=local, check_git=True)
+    assert len(report.git) == 1
+    assert report.git[0][1].dirty
+    # advisory only: the push itself happened
+    assert (remote / ".claude" / "projects").is_dir()
+
+    quiet = sync.push(local_cfg(remote), local_home=local, check_git=False)
+    assert quiet.git == []
+
+
 def test_full_round_trip_merge(homes, not_running):
     """Push from A, add a session on B, pull on A: both sides converge."""
     local, remote = homes

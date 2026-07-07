@@ -178,6 +178,72 @@ def test_local_remote_has_no_clock_skew_check(homes, tmp_path, quiet_env):
     assert "clock skew" not in checks
 
 
+def test_project_coverage_warns_on_outside_home(homes, tmp_path, quiet_env):
+    local, remote = homes
+    d = local / ".claude" / "projects" / "-mnt-c-Users-tasos-proj"
+    d.mkdir(parents=True)
+    (d / "s1.jsonl").write_text('{"cwd":"/mnt/c/Users/tasos/proj"}\n', encoding="utf-8")
+    checks = by_name(doctor.run_checks(write_cfg(tmp_path, remote), local))
+    assert checks["project coverage"].status == doctor.WARN
+    assert "-mnt-c-Users-tasos-proj" in checks["project coverage"].detail
+
+
+def test_project_coverage_ok_when_mapped(homes, tmp_path, quiet_env):
+    local, remote = homes
+    d = local / ".claude" / "projects" / "-mnt-c-Users-tasos-proj"
+    d.mkdir(parents=True)
+    (d / "s1.jsonl").write_text('{"cwd":"/mnt/c/Users/tasos/proj"}\n', encoding="utf-8")
+    path = write_cfg(tmp_path, remote, {"/mnt/c/Users/tasos": f"{remote}/tasos"})
+    checks = by_name(doctor.run_checks(path, local))
+    assert checks["project coverage"].status == doctor.OK
+
+
+def test_other_stores_note(tmp_path):
+    fake_home_root = tmp_path / "home"
+    other = fake_home_root / "tasos" / ".claude" / "projects" / "-x"
+    other.mkdir(parents=True)
+    mine = fake_home_root / "me"
+    (mine / ".claude" / "projects").mkdir(parents=True)
+    checks = []
+    doctor._check_other_stores(checks, mine, roots=(str(fake_home_root),), euid=1000)
+    assert len(checks) == 1
+    assert checks[0].status == doctor.OK
+    assert "claude-hop only syncs the store of the current user" in checks[0].detail
+    assert str(fake_home_root / "tasos" / ".claude") in checks[0].detail
+
+
+def test_other_stores_warns_as_root(tmp_path):
+    fake_home_root = tmp_path / "home"
+    other = fake_home_root / "tasos" / ".claude" / "projects" / "-x"
+    other.mkdir(parents=True)
+    root_home = tmp_path / "root"
+    (root_home / ".claude" / "projects").mkdir(parents=True)
+    checks = []
+    doctor._check_other_stores(checks, root_home, roots=(str(fake_home_root),), euid=0)
+    assert checks[0].status == doctor.WARN
+    assert "running as root" in checks[0].detail
+
+
+def test_other_stores_silent_when_none(tmp_path):
+    fake_home_root = tmp_path / "home"
+    mine = fake_home_root / "me"
+    (mine / ".claude" / "projects" / "-p").mkdir(parents=True)
+    checks = []
+    doctor._check_other_stores(checks, mine, roots=(str(fake_home_root),), euid=1000)
+    assert checks == []
+
+
+def test_other_stores_skips_empty_and_missing(tmp_path):
+    fake_home_root = tmp_path / "home"
+    (fake_home_root / "empty" / ".claude" / "projects").mkdir(parents=True)  # no sessions
+    (fake_home_root / "noclaude").mkdir(parents=True)
+    mine = fake_home_root / "me"
+    (mine / ".claude" / "projects").mkdir(parents=True)
+    checks = []
+    doctor._check_other_stores(checks, mine, roots=(str(fake_home_root),), euid=1000)
+    assert checks == []
+
+
 def test_stale_temp_dirs_warn(homes, tmp_path, quiet_env):
     local, remote = homes
     (quiet_env / "claude-hop-abc123").mkdir()

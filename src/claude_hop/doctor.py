@@ -7,6 +7,7 @@ broken config fails its own check and the remote checks are skipped.
 
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from claude_hop import config as config_mod
+from claude_hop import projects as projects_mod
 from claude_hop import sync
 from claude_hop.config import Config, ConfigError, Remote, resolve_remote
 from claude_hop.remap import PathMapper
@@ -55,7 +57,10 @@ def run_checks(
         for remote in targets:
             suffix = f" ({remote.name})" if many else ""
             _check_mappings(checks, cfg, remote, local_home, suffix)
+            _check_project_coverage(checks, cfg, remote, local_home, suffix)
             _check_remote(checks, remote, suffix)
+    _check_git_state(checks, local_home)
+    _check_other_stores(checks, local_home)
     _check_claude_running(checks)
     _check_stale_temp_dirs(checks)
     return checks
@@ -147,6 +152,114 @@ def _check_remote(checks: list[Check], remote: Remote, suffix: str = "") -> None
                 "remote sessions" + suffix,
                 WARN,
                 f"{transport.remote_projects} does not exist yet — created on first push",
+            )
+        )
+
+
+def _check_project_coverage(
+    checks: list[Check], cfg: Config, remote: Remote, local_home: Path, suffix: str
+) -> None:
+    """Projects outside the home that no mapping covers would land with
+    unresumable paths on this remote."""
+    try:
+        mapper = PathMapper.for_push(local_home, remote.home, cfg.merged_mappings(remote.name))
+    except ValueError:
+        return  # the mappings check already failed
+    report = projects_mod.find_outside_home(
+        local_home / ".claude" / "projects", local_home, mapper
+    )
+    if report:
+        shown = ", ".join(report.names[:3]) + ("…" if len(report.names) > 3 else "")
+        checks.append(
+            Check(
+                "project coverage" + suffix,
+                WARN,
+                f"{len(report.names)} project(s) outside home, not covered by any "
+                f"mapping: {shown} — push/pull will refuse them",
+            )
+        )
+    else:
+        checks.append(
+            Check("project coverage" + suffix, OK, "home remap or mappings cover every project")
+        )
+
+
+def _check_git_state(checks: list[Check], local_home: Path) -> None:
+    warnings = projects_mod.git_warnings(local_home / ".claude" / "projects")
+    if not warnings:
+        checks.append(Check("git state", OK, "no unpushed work detected in project repos"))
+        return
+    parts = []
+    for _name, state in warnings[:4]:
+        flags = []
+        if state.dirty:
+            flags.append("dirty")
+        if state.ahead is None:
+            flags.append("no upstream")
+        elif state.ahead:
+            flags.append(f"{state.ahead} unpushed")
+        parts.append(f"{os.path.basename(state.path)} ({', '.join(flags)})")
+    more = "…" if len(warnings) > 4 else ""
+    checks.append(
+        Check(
+            "git state",
+            WARN,
+            f"{len(warnings)} repo(s) with work that hasn't traveled via git: "
+            f"{', '.join(parts)}{more} — sessions will arrive before the code does",
+        )
+    )
+
+
+def _check_other_stores(
+    checks: list[Check],
+    local_home: Path,
+    roots: tuple[str, ...] = ("/home", "/root"),
+    euid: int | None = None,
+) -> None:
+    """Other users' ~/.claude stores on this machine — claude-hop only syncs
+    the current user's. The classic trap is running as root on WSL."""
+    euid = os.geteuid() if euid is None else euid
+    active = (Path(local_home) / ".claude" / "projects").resolve()
+    found: list[Path] = []
+    for root in roots:
+        root_path = Path(root)
+        homes = [root_path] if root == "/root" else None
+        try:
+            homes = homes if homes is not None else sorted(
+                d for d in root_path.iterdir() if d.is_dir()
+            )
+        except OSError:
+            continue
+        for home in homes:
+            store = home / ".claude" / "projects"
+            try:
+                if not store.is_dir() or store.resolve() == active:
+                    continue
+                if any(p.is_dir() for p in store.iterdir()):
+                    found.append(home / ".claude")
+            except OSError:
+                continue  # unreadable: skip silently
+    if not found:
+        return
+    names = ", ".join(str(f) for f in found)
+    plural = "stores exist" if len(found) > 1 else "store exists"
+    if euid == 0 and any(not str(f).startswith("/root") for f in found):
+        checks.append(
+            Check(
+                "session stores",
+                WARN,
+                f"running as root: syncing /root/.claude, but another Claude Code "
+                f"session {plural} at {names} — claude-hop only syncs the store "
+                "of the current user",
+            )
+        )
+    else:
+        checks.append(
+            Check(
+                "session stores",
+                OK,
+                f"another Claude Code session {plural} at {names} — claude-hop "
+                "only syncs the store of the current user",
             )
         )
 
