@@ -6,6 +6,55 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-07
+
+The "field feedback" release: every friction point reported from real
+multi-remote, WSL, and first-round-trip setups.
+
+### Merge integrity
+
+- Verified end to end that rewritten session files always carry the
+  original mtime (nanosecond-exact through the remap step; second-round-
+  trip covered in e2e) — newer-wins merging depends on it.
+- `doctor` checks clock skew against each SSH remote and warns above 30s
+  that newer-wins merging may skip updates.
+- `push`/`pull --verbose` lists files a merge skipped because the
+  destination copy was newer, so silent skips are visible.
+
+### Truthful SSH probes
+
+- All probes (init wizard, doctor, `remotes list --check`) run with
+  BatchMode and a connect timeout — they can never hang on an invisible
+  password prompt.
+- Outcomes are classified: auth failure reports "host reachable, but
+  key-based auth isn't set up — run: ssh-copy-id <host>" instead of a
+  bogus timeout; timeout, DNS failure, and refused/no-route are each
+  reported as what they are. `remotes list --check` distinguishes
+  ✓ reachable / ✗ no auth / ✗ unreachable / local.
+
+### Projects outside the home directory (WSL)
+
+- `status` flags projects the home remap can't place (e.g. `/mnt/c/...`)
+  instead of showing a misleading "unchanged".
+- `push`/`pull` refuse such projects with a ready-to-paste `[mappings]`
+  snippet computed from the projects' real paths (recovered from session
+  cwd fields and validated against the directory name); `--force`
+  overrides. `init`/`remotes add` offer to add the prefix mapping
+  interactively; `doctor` gains a project-coverage check.
+
+### Git awareness
+
+- `push` warns (stderr, advisory only) when a synced project's repo has
+  uncommitted changes or commits not pushed to any upstream — session
+  context arrives before the code does. Suppress with `--quiet-git` or
+  `--yes`. `doctor` gains the same scan.
+
+### Session-store sanity
+
+- `doctor` notes other users' `~/.claude` session stores on the machine
+  and warns specifically when running as root while non-root stores
+  exist (claude-hop only syncs the current user's store).
+
 ### Fixed
 
 - `claude-hop upgrade` on uv installs now bypasses uv's index cache

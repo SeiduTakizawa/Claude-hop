@@ -167,6 +167,24 @@ to upgrade the file in place (the original is backed up first).
 `claude-hop status` shows exactly how every project will map; if one looks
 wrong, add it under `[mappings]` (or the remote's own mappings table).
 
+### WSL / projects outside $HOME
+
+The generic home remap only helps paths that contain your home. Projects
+elsewhere — the classic case is WSL work under `/mnt/c/...` — need a
+mapping prefix, or their sessions would land on the remote with paths
+`claude --resume` can't find:
+
+```toml
+[remotes.mac.mappings]
+"/mnt/c/Users/tasos" = "/Users/tasos/win"
+```
+
+You don't have to work this out yourself: `status` flags affected
+projects, `push`/`pull` refuse them with a ready-to-paste snippet
+(computed from the projects' real paths), and `init`/`remotes add` offer
+to add the prefix mapping during setup. `--force` pushes them unchanged
+if you really want that.
+
 ## Supported platforms
 
 Any pair of Unix-shaped machines, in either direction: **Linux ↔ macOS**,
@@ -191,6 +209,23 @@ no native rsync. If you need it, open an issue.
   remapping rather than risk corrupting them.
 - On macOS 15+, the bundled `rsync` is `openrsync`; it works, but if you hit
   option errors, `brew install rsync`.
+
+## Troubleshooting
+
+- **An update didn't come back after working on the other machine.**
+  Merging is newer-file-wins, so clocks are load-bearing: `claude-hop
+  doctor` warns when a remote's clock is skewed by more than 30 seconds.
+  Run `push`/`pull` with `--verbose` to see any files a merge skipped
+  because the destination copy was newer.
+- **The resumed conversation shows up as a second session.** `claude
+  --resume` continues a synced conversation into a *new* session file, so
+  after syncing back you'll see both the original and the continuation in
+  the picker. That's Claude Code's session model, not a sync bug — both
+  files sync fine.
+- **"host reachable, but key-based auth isn't set up".** Probes never use
+  passwords (they'd hang invisibly), so password-only hosts show this
+  message. Run the suggested `ssh-copy-id user@host` once, or point the
+  config's `host` at an `~/.ssh/config` alias that carries your key.
 
 ## Development
 
