@@ -29,7 +29,7 @@ lx 'for i in $(seq 1 30); do
     done
     echo "sshd on mac unreachable" >&2; exit 1'
 
-step "seed sessions and config on linux"
+step "seed sessions and LEGACY-format config on linux"
 lx 'mkdir -p ~/.claude/projects/-home-tester-work-webshop &&
     printf "%s\n" "{\"cwd\":\"/home/tester/work/webshop\",\"msg\":\"from linux\"}" \
       > ~/.claude/projects/-home-tester-work-webshop/s1.jsonl'
@@ -37,14 +37,19 @@ lx 'mkdir -p ~/.config/claude-hop &&
     printf "[remote]\nhost = \"mac\"\nhome = \"/Users/tester\"\n" \
       > ~/.config/claude-hop/config.toml'
 
-step "claude-hop doctor"
+step "legacy pass: doctor / status / push work on the old format"
 lx 'claude-hop doctor'
-
-step "claude-hop status"
 lx 'claude-hop status'
-
-step "claude-hop push"
 lx 'claude-hop push --yes'
+lx 'claude-hop status 2>&1 >/dev/null | grep -q "run claude-hop remotes migrate to upgrade it"'
+echo "ok: legacy config works and hints at migration on stderr"
+
+step "migrate to the multi-remote format"
+lx 'claude-hop remotes migrate'
+lx 'test -f ~/.config/claude-hop/config.toml.bak'
+lx 'grep -q "\[remotes.default\]" ~/.config/claude-hop/config.toml'
+lx 'claude-hop remotes'
+echo "ok: migrated; everything below runs on the new format"
 
 step "assert remapped sessions on mac"
 mc 'test -f ~/.claude/projects/-Users-tester-work-webshop/s1.jsonl'

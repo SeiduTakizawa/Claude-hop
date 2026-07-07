@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Multiple remotes: named `[remotes.<name>]` config tables with optional
+  per-remote mappings merged over the global `[mappings]`. `push`, `pull`,
+  `diff`, and `status` take an optional REMOTE argument; `--all` on
+  push/pull syncs every remote (continuing past failures, with a summary
+  table); `doctor` checks every remote by default.
+- `claude-hop remotes` command group: `list` (with `--check` SSH probing),
+  `add`, `remove`, `rename`, and `migrate` for upgrading old single-remote
+  configs (backed up first, never auto-migrated). Old configs keep working
+  as a remote named `default`.
+- `init` with an existing config now offers to add another remote instead
+  of overwriting.
+
 ## [0.2.0] - 2026-07-07
 
 ### Added

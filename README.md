@@ -64,15 +64,33 @@ then pull reproduces your files byte for byte.
 
 | Command | What it does |
 |---|---|
-| `claude-hop init` | Interactive setup: SSH host, connection test, remote home auto-detection, rsync checks. |
-| `claude-hop status` | Table of local projects, session counts, and the remapped name each gets on the remote; flags ambiguous mappings. |
-| `claude-hop diff` | What would sync, in both directions, without writing anything. |
-| `claude-hop push` | Send local sessions to the remote machine. |
-| `claude-hop pull` | Fetch remote sessions and merge them in. |
-| `claude-hop doctor` | Environment checks: SSH, rsync versions, config, running Claude Code, stale staging dirs. |
+| `claude-hop init` | Interactive setup: SSH host, connection test, remote home auto-detection, rsync checks. With an existing config it offers to add another remote. |
+| `claude-hop status [REMOTE]` | Table of local projects, session counts, and the remapped name each gets on the remote; flags ambiguous mappings. |
+| `claude-hop diff [REMOTE]` | What would sync, in both directions, without writing anything. |
+| `claude-hop push [REMOTE]` | Send local sessions to a remote machine. `--all` pushes to every remote. |
+| `claude-hop pull [REMOTE]` | Fetch a remote's sessions and merge them in. `--all` pulls from every remote. |
+| `claude-hop doctor [REMOTE]` | Environment checks: SSH, rsync versions, config, running Claude Code, stale staging dirs. Checks every remote by default. |
+| `claude-hop remotes` | List configured remotes (`--check` probes them over SSH). |
+| `claude-hop remotes add/remove/rename` | Manage remotes; `add` runs the same wizard as init. |
+| `claude-hop remotes migrate` | Upgrade an old single-remote config to the multi-remote format (backs up the original first). |
 | `claude-hop upgrade` | Upgrade claude-hop itself to the latest release (works for uv, pipx, and pip installs). |
 
-`push` and `pull` accept `--dry-run` (`-n`), `--yes` (`-y`), and `--force`.
+`push` and `pull` accept `--dry-run` (`-n`), `--yes` (`-y`), `--force`, and `--all`.
+
+**Which remote runs?** An explicit name wins (`claude-hop push mac`); with
+exactly one remote configured the name can be omitted; with several and no
+name, commands refuse and list your options — nothing is picked implicitly.
+The first positional argument counts as a remote only when it exactly
+matches a configured remote name; anything else is a project selector, and
+a near-miss of a remote name is an error with a suggestion rather than a
+silent no-op. If a directory in your cwd shares a remote's name, write
+`./name` to mean the project.
+
+**Multiple machines are hub-and-spoke.** This machine is the operator;
+remotes only need `sshd` and `rsync`, and remotes never talk to each other.
+To move sessions between two remotes, route through the hub —
+`claude-hop pull mac` then `claude-hop push thinkpad` — the merge semantics
+(newer file wins, never deletes) make that safe in any order.
 
 ### Syncing a single project
 
@@ -88,6 +106,11 @@ claude-hop diff . ~/work/blog                 # several at once
 
 Encoded names start with a dash, so pass them after the standard `--`
 separator — everything after `--` is a selector, never an option.
+
+Selectors are asymmetric on purpose: `push` matches them against your
+*local* projects, while `pull` translates them through the mapping and
+matches against the *remote's* projects — so pulling a project that doesn't
+exist locally yet works.
 
 When a selection is given, only those projects sync and the optional `[sync]`
 extras (history/agents/skills) are skipped.
@@ -108,26 +131,38 @@ extras (history/agents/skills) are skipped.
 ## Configuration
 
 `~/.config/claude-hop/config.toml` (written by `init`, `$XDG_CONFIG_HOME`
-honoured):
+honoured). Each machine you sync with is a named `[remotes.<name>]` table:
 
 ```toml
-[remote]
+[remotes.mac]
 host = "mac.local"          # SSH alias or hostname; "" = a local directory
 home = "/Users/alice"       # auto-detected at init
 
-[sync]
+[remotes.thinkpad]
+host = "192.168.1.50"
+home = "/home/al"
+
+# per-remote mappings: merged over the global [mappings], per-remote wins
+[remotes.mac.mappings]
+"/home/alice/work/webshop" = "/Users/alice/projects/webshop"
+
+[sync]                      # applies to all remotes
 include_history = false     # also sync ~/.claude/history.jsonl (remapped)
 include_agents = false      # also sync ~/.claude/agents/ (verbatim)
 include_skills = false      # also sync ~/.claude/skills/ (verbatim)
 
 [mappings]
-# For projects that live at *different relative paths* on the two machines.
+# Global: projects at *different relative paths* on the other machines.
 # Specific mappings win over the generic home remap.
-"/home/alice/work/webshop" = "/Users/alice/projects/webshop"
+"/home/alice/work/blog" = "/srv/blog"
 ```
 
+Configs from claude-hop ≤ 0.2.0 (a single `[remote]` table) keep working
+and are read as a remote named `default`; run `claude-hop remotes migrate`
+to upgrade the file in place (the original is backed up first).
+
 `claude-hop status` shows exactly how every project will map; if one looks
-wrong, add it under `[mappings]`.
+wrong, add it under `[mappings]` (or the remote's own mappings table).
 
 ## Limitations worth knowing
 

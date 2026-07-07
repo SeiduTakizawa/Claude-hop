@@ -23,14 +23,18 @@ from claude_hop.banner import get_version, show_banner
 from claude_hop.config import Config, ConfigError, Remote, resolve_remote
 from claude_hop.remap import PathMapper
 from claude_hop.sync import SyncError
-from claude_hop.transport import TransportError, local_rsync_available
+from claude_hop.transport import Transport, TransportError, local_rsync_available
 
 app = typer.Typer(
-    help="Sync Claude Code sessions between two machines over SSH — no cloud.",
+    help="Sync Claude Code sessions between machines over SSH — no cloud.",
     no_args_is_help=True,
 )
+remotes_app = typer.Typer(help="See and manage the remotes this machine syncs with.")
+app.add_typer(remotes_app, name="remotes")
 console = Console()
-err_console = Console(stderr=True)
+# stderr hints/notices must never line-wrap: piped logs and greps rely on
+# the phrase staying on one line
+err_console = Console(stderr=True, soft_wrap=True)
 _state: dict = {"config_path": None}
 
 _FAILURES = (ConfigError, SyncError, TransportError, ValueError)
@@ -95,15 +99,73 @@ def init() -> None:
     show_banner(console, get_version())
     path = _config_path()
     if path.exists():
-        typer.confirm(f"{path} exists — overwrite?", abort=True)
+        _init_existing(path)
+        return
+    remote = _wizard_remote(name=None)
+    config_mod.save(Config(remotes={remote.name: remote}), path)
+    console.print(f"[green]✓[/green] wrote {path}")
+    console.print("Run [bold]claude-hop status[/bold] to check how your projects will map.")
 
+
+def _init_existing(path: Path) -> None:
+    """init with an existing config: offer to add a remote, never overwrite."""
+    try:
+        cfg = config_mod.load(path)
+    except ConfigError:
+        typer.confirm(f"{path} exists but can't be parsed — overwrite it?", abort=True)
+        remote = _wizard_remote(name=None)
+        config_mod.save(Config(remotes={remote.name: remote}), path)
+        console.print(f"[green]✓[/green] wrote {path}")
+        return
+    existing = ", ".join(cfg.remotes) or "none"
+    console.print(f"Config already exists (remotes: {existing}).")
+    if cfg.legacy:
+        console.print("It uses the old single-remote format.")
+        if not typer.confirm("Migrate it to the multi-remote format now?", default=True):
+            console.print("nothing changed")
+            return
+        try:
+            backup = config_mod.migrate(path)
+        except _FAILURES as e:
+            raise _fail(e) from e
+        console.print(f"[green]✓[/green] migrated — original kept at {backup}")
+        cfg = config_mod.load(path)
+    if not typer.confirm("Add a new remote to it?", default=True):
+        console.print("nothing changed")
+        return
+    name = typer.prompt("Name for the new remote").strip()
+    _add_remote_to(cfg, name, path)
+
+
+def _require_new_format(cfg: Config) -> None:
+    if cfg.legacy:
+        raise _fail(
+            ConfigError(
+                "this config uses the legacy single-remote format — "
+                "run claude-hop remotes migrate first"
+            )
+        )
+
+
+def _add_remote_to(cfg: Config, name: str, path: Path) -> None:
+    if not config_mod._NAME_RE.match(name):
+        raise _fail(ValueError(f"invalid remote name {name!r} — letters, digits, - and _ only"))
+    if name in cfg.remotes:
+        raise _fail(ConfigError(f"remote {name!r} already exists"))
+    cfg.remotes[name] = _wizard_remote(name)
+    config_mod.save(cfg, path)
+    console.print(f"[green]✓[/green] added remote {name!r} ({len(cfg.remotes)} configured)")
+
+
+def _wizard_remote(name: str | None) -> Remote:
+    """The interactive host/home wizard; prompts for a name when not given."""
     host = typer.prompt(
         "SSH host of the other machine (alias or hostname; leave empty for a local directory)",
         default="",
         show_default=False,
     ).strip()
 
-    remote_home = ""
+    detected = ""
     if host:
         with console.status(f"connecting to {host}…"):
             detected, remote_rsync, error = _probe_remote(host)
@@ -127,19 +189,17 @@ def init() -> None:
     if not remote_home.startswith("/"):
         raise _fail(ValueError(f"home must be an absolute path, got {remote_home!r}"))
 
-    name = typer.prompt("Name for this remote", default=_suggest_name(host)).strip()
-    if not config_mod._NAME_RE.match(name):
-        raise _fail(ValueError(f"invalid remote name {name!r} — letters, digits, - and _ only"))
+    if name is None:
+        name = typer.prompt("Name for this remote", default=_suggest_name(host)).strip()
+        if not config_mod._NAME_RE.match(name):
+            raise _fail(ValueError(f"invalid remote name {name!r} — letters, digits, - and _ only"))
 
     if local_rsync_available():
         console.print("[green]✓[/green] rsync found locally")
     else:
         console.print("[yellow]⚠[/yellow] rsync not found locally — install it before syncing")
 
-    remote = Remote(name=name, host=host, home=remote_home.rstrip("/"))
-    config_mod.save(Config(remotes={name: remote}), path)
-    console.print(f"[green]✓[/green] wrote {path}")
-    console.print("Run [bold]claude-hop status[/bold] to check how your projects will map.")
+    return Remote(name=name, host=host, home=remote_home.rstrip("/"))
 
 
 def _suggest_name(host: str) -> str:
@@ -540,6 +600,137 @@ def upgrade() -> None:
     if result.returncode != 0:
         raise _fail(SyncError(f"upgrade command failed (exit {result.returncode})"))
     console.print("[green]✓[/green] done — [bold]claude-hop --version[/bold] to confirm")
+
+
+@remotes_app.callback(invoke_without_command=True)
+def _remotes_root(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        _print_remotes(check=False)
+
+
+@remotes_app.command("list")
+def remotes_list(
+    check: bool = typer.Option(False, "--check", help="Probe each remote over SSH."),
+) -> None:
+    """Show configured remotes (default when no subcommand is given)."""
+    _print_remotes(check)
+
+
+def _print_remotes(check: bool) -> None:
+    cfg = _load_config()
+    statuses = (
+        _probe_remotes(cfg) if check else dict.fromkeys(cfg.remotes, "[dim]—[/dim]")
+    )
+    table = Table(title="Remotes")
+    table.add_column("Name", style="bold")
+    table.add_column("Host")
+    table.add_column("Home", overflow="fold")
+    table.add_column("Mappings", justify="right")
+    table.add_column("Status")
+    for r in cfg.remotes.values():
+        table.add_row(
+            r.name,
+            r.host or "[dim](local path)[/dim]",
+            r.home,
+            str(len(cfg.merged_mappings(r.name))),
+            statuses[r.name],
+        )
+    console.print(table)
+    if not cfg.remotes:
+        console.print("[yellow]no remotes configured — run claude-hop init[/yellow]")
+
+
+def _probe_remotes(cfg: Config) -> dict[str, str]:
+    """SSH-probe every remote in parallel with a short timeout."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def probe(remote: Remote) -> str:
+        if not remote.host:
+            return "local"
+        try:
+            result = Transport(remote.host, remote.home).run_ssh("true", timeout=8)
+        except TransportError:
+            return "[red]✗ unreachable[/red]"
+        if result.returncode == 0:
+            return "[green]✓ reachable[/green]"
+        return "[red]✗ unreachable[/red]"
+
+    if not cfg.remotes:
+        return {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(probe, cfg.remotes.values()))
+    return dict(zip(cfg.remotes, results, strict=True))
+
+
+@remotes_app.command()
+def add(name: str = typer.Argument(..., help="Name for the new remote.")) -> None:
+    """Add a remote via the interactive wizard."""
+    cfg = _load_config()
+    _require_new_format(cfg)
+    _add_remote_to(cfg, name, _config_path())
+
+
+@remotes_app.command()
+def remove(
+    name: str = typer.Argument(..., help="Remote to remove."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
+) -> None:
+    """Remove a remote from the config."""
+    cfg = _load_config()
+    _require_new_format(cfg)
+    try:
+        resolve_remote(cfg, name)
+    except _FAILURES as e:
+        raise _fail(e) from e
+    if not yes:
+        typer.confirm(f"Remove remote {name!r}?", abort=True)
+    del cfg.remotes[name]
+    config_mod.save(cfg, _config_path())
+    console.print(f"[green]✓[/green] removed {name!r}")
+    if not cfg.remotes:
+        console.print(
+            "[yellow]⚠ no remotes left — push/pull won't work until you add one[/yellow]"
+        )
+
+
+@remotes_app.command()
+def rename(
+    old: str = typer.Argument(..., help="Current name."),
+    new: str = typer.Argument(..., help="New name."),
+) -> None:
+    """Rename a remote."""
+    cfg = _load_config()
+    _require_new_format(cfg)
+    try:
+        resolve_remote(cfg, old)
+    except _FAILURES as e:
+        raise _fail(e) from e
+    if not config_mod._NAME_RE.match(new):
+        raise _fail(ValueError(f"invalid remote name {new!r} — letters, digits, - and _ only"))
+    if new in cfg.remotes:
+        raise _fail(ConfigError(f"remote {new!r} already exists"))
+    renamed: dict[str, Remote] = {}
+    for key, value in cfg.remotes.items():
+        if key == old:
+            renamed[new] = Remote(
+                name=new, host=value.host, home=value.home, mappings=value.mappings
+            )
+        else:
+            renamed[key] = value
+    cfg.remotes = renamed
+    config_mod.save(cfg, _config_path())
+    console.print(f"[green]✓[/green] renamed {old!r} → {new!r}")
+
+
+@remotes_app.command()
+def migrate() -> None:
+    """Rewrite a legacy single-[remote] config in the multi-remote format."""
+    try:
+        backup = config_mod.migrate(_state["config_path"])
+    except _FAILURES as e:
+        raise _fail(e) from e
+    console.print(f"[green]✓[/green] migrated {_config_path()}")
+    console.print(f"[dim]original kept at {backup}[/dim]")
 
 
 def main() -> None:
