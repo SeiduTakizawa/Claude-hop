@@ -3,6 +3,12 @@
        alt="claude-hop — sync Claude Code sessions between machines" width="100%">
 </p>
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/SeiduTakizawa/Claude-hop/main/assets/claude-hop.gif"
+       alt="claude-hop demo: init banner, remotes table, the path remap, push" width="800">
+</p>
+<p align="center"><em>Real commands against a sandbox — <a href="demo/demo.tape">scripted with VHS</a>, so it re-renders instead of re-recording.</em></p>
+
 Sync Claude Code sessions between two machines over SSH — no cloud storage,
 just rsync between your own boxes. Start a session on your Linux desktop,
 `claude --resume` it on your Mac (or the other way round).
@@ -187,6 +193,15 @@ make e2e          # full two-container SSH round trip (needs Docker)
 The e2e rig (`e2e/`) spins up two containers — one with a Linux-style home,
 one macOS-style — wires SSH key auth between them, and drives the real CLI
 through push, modify-on-the-other-side, and pull.
+
+### Regenerating the demo
+
+The README GIF is scripted, not hand-recorded: `demo/setup.sh` builds a
+self-contained sandbox (fake home, two local-path remotes) and
+`demo/demo.tape` replays real commands against it with
+[VHS](https://github.com/charmbracelet/vhs). When CLI output changes, run
+`make demo` (needs `vhs`, `ttyd`, `ffmpeg`) and commit the refreshed
+`assets/claude-hop.gif`.
 
 ## License
 
