@@ -16,7 +16,7 @@ from pathlib import Path
 
 from claude_hop import config as config_mod
 from claude_hop import sync
-from claude_hop.config import Config, ConfigError
+from claude_hop.config import Config, ConfigError, Remote, resolve_remote
 from claude_hop.remap import PathMapper
 from claude_hop.transport import Transport, TransportError
 
@@ -32,35 +32,47 @@ class Check:
     detail: str
 
 
-def run_checks(config_path: Path | None, local_home: Path) -> list[Check]:
+def run_checks(
+    config_path: Path | None, local_home: Path, remote_name: str | None = None
+) -> list[Check]:
     checks: list[Check] = []
-    cfg = _check_config(checks, config_path, local_home)
+    resolved = _check_config(checks, config_path, local_home, remote_name)
     _check_local_sessions(checks, local_home)
     _check_local_rsync(checks)
-    if cfg is not None:
-        _check_remote(checks, cfg)
+    if resolved is not None:
+        _, remote = resolved
+        _check_remote(checks, remote)
     _check_claude_running(checks)
     _check_stale_temp_dirs(checks)
     return checks
 
 
 def _check_config(
-    checks: list[Check], config_path: Path | None, local_home: Path
-) -> Config | None:
+    checks: list[Check],
+    config_path: Path | None,
+    local_home: Path,
+    remote_name: str | None,
+) -> tuple[Config, Remote] | None:
     try:
         cfg = config_mod.load(config_path)
     except ConfigError as e:
         checks.append(Check("config", FAIL, str(e)))
         return None
-    where = f"SSH host {cfg.host!r}" if cfg.host else f"local path {cfg.remote_home!r}"
-    checks.append(Check("config", OK, f"valid — remote is {where}"))
     try:
-        PathMapper.for_push(local_home, cfg.remote_home, cfg.mappings)
-        checks.append(Check("mappings", OK, f"{len(cfg.mappings)} explicit mapping(s)"))
+        remote = resolve_remote(cfg, remote_name)
+    except ConfigError as e:
+        checks.append(Check("config", FAIL, str(e)))
+        return None
+    where = f"SSH host {remote.host!r}" if remote.host else f"local path {remote.home!r}"
+    checks.append(Check("config", OK, f"valid — remote {remote.name!r} is {where}"))
+    mappings = cfg.merged_mappings(remote.name)
+    try:
+        PathMapper.for_push(local_home, remote.home, mappings)
+        checks.append(Check("mappings", OK, f"{len(mappings)} explicit mapping(s)"))
     except ValueError as e:
         checks.append(Check("mappings", FAIL, str(e)))
         return None
-    return cfg
+    return cfg, remote
 
 
 def _check_local_sessions(checks: list[Check], local_home: Path) -> None:
@@ -84,9 +96,9 @@ def _check_local_rsync(checks: list[Check]) -> None:
     checks.append(Check("rsync (local)", OK, _rsync_version(["rsync", "--version"])))
 
 
-def _check_remote(checks: list[Check], cfg: Config) -> None:
-    transport = Transport(cfg.host, cfg.remote_home)
-    if not cfg.host:
+def _check_remote(checks: list[Check], remote: Remote) -> None:
+    transport = Transport(remote.host, remote.home)
+    if not remote.host:
         checks.append(Check("ssh", OK, "local-path mode — no SSH involved"))
     else:
         try:
@@ -96,23 +108,25 @@ def _check_remote(checks: list[Check], cfg: Config) -> None:
             return
         if r.returncode != 0 or "__claude_hop_ok__" not in r.stdout:
             detail = r.stderr.strip().splitlines()[-1] if r.stderr.strip() else "unreachable"
-            checks.append(Check("ssh", FAIL, f"cannot reach {cfg.host!r}: {detail}"))
+            checks.append(Check("ssh", FAIL, f"cannot reach {remote.host!r}: {detail}"))
             return
-        checks.append(Check("ssh", OK, f"{cfg.host!r} reachable"))
+        checks.append(Check("ssh", OK, f"{remote.host!r} reachable"))
 
         rv = transport.run_ssh("rsync --version 2>/dev/null | head -n1")
         if rv.returncode != 0 or not rv.stdout.strip():
-            checks.append(Check("rsync (remote)", FAIL, f"not found on {cfg.host!r} — install it"))
+            checks.append(
+                Check("rsync (remote)", FAIL, f"not found on {remote.host!r} — install it")
+            )
         else:
             checks.append(Check("rsync (remote)", OK, rv.stdout.strip()))
 
-        hv = transport.run_ssh(f'test -d {shlex.quote(cfg.remote_home)}')
+        hv = transport.run_ssh(f'test -d {shlex.quote(remote.home)}')
         if hv.returncode != 0:
             checks.append(
-                Check("remote home", FAIL, f"{cfg.remote_home} does not exist on {cfg.host!r}")
+                Check("remote home", FAIL, f"{remote.home} does not exist on {remote.host!r}")
             )
             return
-        checks.append(Check("remote home", OK, cfg.remote_home))
+        checks.append(Check("remote home", OK, remote.home))
 
     if transport.remote_projects_exists():
         checks.append(Check("remote sessions", OK, transport.remote_projects))

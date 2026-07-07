@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from claude_hop import sync
-from claude_hop.config import Config
+from claude_hop.config import Config, Remote
 from claude_hop.remap import encode_path
 
 requires_rsync = pytest.mark.skipif(
@@ -39,8 +39,11 @@ def make_session(home: Path, rel: str, name: str = "s1.jsonl", extra: str = "") 
     return f
 
 
-def local_cfg(remote_home: Path, mappings: dict[str, str] | None = None) -> Config:
-    return Config(host="", remote_home=str(remote_home), mappings=mappings or {})
+def local_cfg(
+    remote_home: Path, mappings: dict[str, str] | None = None, name: str = "default"
+) -> Config:
+    remote = Remote(name=name, host="", home=str(remote_home), mappings=mappings or {})
+    return Config(remotes={name: remote})
 
 
 def session_cwd(path: Path) -> str:

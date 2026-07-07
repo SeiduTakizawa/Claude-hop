@@ -3,9 +3,8 @@ from typer.testing import CliRunner
 
 from claude_hop import config as config_mod
 from claude_hop.cli import app
-from claude_hop.config import Config
 from claude_hop.remap import encode_path
-from conftest import make_session, requires_rsync
+from conftest import local_cfg, make_session, requires_rsync
 
 runner = CliRunner()
 
@@ -15,7 +14,7 @@ def env(homes, monkeypatch, tmp_path):
     """Wire CLI env hooks to the fake homes and write a local-mode config."""
     local, remote = homes
     cfg_path = tmp_path / "config.toml"
-    config_mod.save(Config(host="", remote_home=str(remote)), cfg_path)
+    config_mod.save(local_cfg(remote), cfg_path)
     monkeypatch.setenv("CLAUDE_HOP_CONFIG", str(cfg_path))
     monkeypatch.setenv("CLAUDE_HOP_HOME", str(local))
     monkeypatch.setenv("COLUMNS", "400")
@@ -177,11 +176,28 @@ def test_init_local_mode_writes_config(homes, monkeypatch, tmp_path):
     _, remote = homes
     cfg_path = tmp_path / "cfg" / "config.toml"
     monkeypatch.setenv("CLAUDE_HOP_CONFIG", str(cfg_path))
-    result = runner.invoke(app, ["init"], input=f"\n{remote}\n")
+    # prompts: host (empty), local dir, remote name (accept default "local")
+    result = runner.invoke(app, ["init"], input=f"\n{remote}\n\n")
     assert result.exit_code == 0, result.output
     cfg = config_mod.load(cfg_path)
-    assert cfg.host == ""
-    assert cfg.remote_home == str(remote)
+    assert list(cfg.remotes) == ["local"]
+    assert cfg.remotes["local"].host == ""
+    assert cfg.remotes["local"].home == str(remote)
+
+
+def test_legacy_config_prints_migrate_hint(homes, monkeypatch, tmp_path):
+    local, remote = homes
+    make_session(local, "work/webshop")
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(f'[remote]\nhost = ""\nhome = "{remote}"\n', encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_HOP_CONFIG", str(cfg_path))
+    monkeypatch.setenv("CLAUDE_HOP_HOME", str(local))
+    monkeypatch.setenv("COLUMNS", "300")
+    result = runner.invoke(app, ["status"])
+    assert result.exit_code == 0, result.output
+    # the hint goes to stderr so piped stdout stays clean
+    assert "remotes migrate" not in result.stdout
+    assert "remotes migrate" in result.stderr
 
 
 def test_init_refuses_relative_home(monkeypatch, tmp_path):

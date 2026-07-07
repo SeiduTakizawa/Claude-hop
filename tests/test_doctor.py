@@ -4,8 +4,7 @@ import pytest
 
 from claude_hop import config as config_mod
 from claude_hop import doctor, sync
-from claude_hop.config import Config
-from conftest import make_session
+from conftest import local_cfg, make_session
 
 
 @pytest.fixture
@@ -24,7 +23,7 @@ def by_name(checks):
 
 def write_cfg(tmp_path, remote_home, mappings=None):
     path = tmp_path / "config.toml"
-    config_mod.save(Config(host="", remote_home=str(remote_home), mappings=mappings or {}), path)
+    config_mod.save(local_cfg(remote_home, mappings), path)
     return path
 
 

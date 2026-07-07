@@ -18,7 +18,7 @@ from claude_hop import __version__
 from claude_hop import config as config_mod
 from claude_hop import sync as sync_mod
 from claude_hop.banner import get_version, show_banner
-from claude_hop.config import Config, ConfigError
+from claude_hop.config import Config, ConfigError, Remote, resolve_remote
 from claude_hop.remap import PathMapper
 from claude_hop.sync import SyncError
 from claude_hop.transport import TransportError, local_rsync_available
@@ -28,6 +28,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+err_console = Console(stderr=True)
 _state: dict = {"config_path": None}
 
 _FAILURES = (ConfigError, SyncError, TransportError, ValueError)
@@ -71,9 +72,15 @@ def _fail(exc: Exception) -> typer.Exit:
 
 def _load_config() -> Config:
     try:
-        return config_mod.load(_state["config_path"])
+        cfg = config_mod.load(_state["config_path"])
     except _FAILURES as e:
         raise _fail(e) from e
+    if cfg.legacy:
+        err_console.print(
+            "[dim]note: this config uses the old single-remote format — "
+            "run claude-hop remotes migrate to upgrade it[/dim]"
+        )
+    return cfg
 
 
 def _log(msg: str) -> None:
@@ -118,15 +125,28 @@ def init() -> None:
     if not remote_home.startswith("/"):
         raise _fail(ValueError(f"home must be an absolute path, got {remote_home!r}"))
 
+    name = typer.prompt("Name for this remote", default=_suggest_name(host)).strip()
+    if not config_mod._NAME_RE.match(name):
+        raise _fail(ValueError(f"invalid remote name {name!r} — letters, digits, - and _ only"))
+
     if local_rsync_available():
         console.print("[green]✓[/green] rsync found locally")
     else:
         console.print("[yellow]⚠[/yellow] rsync not found locally — install it before syncing")
 
-    cfg = Config(host=host, remote_home=remote_home.rstrip("/"))
-    config_mod.save(cfg, path)
+    remote = Remote(name=name, host=host, home=remote_home.rstrip("/"))
+    config_mod.save(Config(remotes={name: remote}), path)
     console.print(f"[green]✓[/green] wrote {path}")
     console.print("Run [bold]claude-hop status[/bold] to check how your projects will map.")
+
+
+def _suggest_name(host: str) -> str:
+    """A short default remote name derived from the SSH host."""
+    if not host:
+        return "local"
+    label = host.split("@")[-1].split(".")[0]
+    label = "".join(c for c in label if c.isalnum() or c in "-_")
+    return label.lower() if label and label[0].isalnum() else "remote"
 
 
 def _probe_remote(host: str) -> tuple[str, bool, str]:
@@ -159,12 +179,13 @@ def status() -> None:
     if not projects.is_dir():
         raise _fail(SyncError(f"no local sessions at {projects}"))
     try:
-        mapper = PathMapper.for_push(local_home, cfg.remote_home, cfg.mappings)
+        target = resolve_remote(cfg, None)
+        mapper = PathMapper.for_push(local_home, target.home, cfg.merged_mappings(target.name))
     except _FAILURES as e:
         raise _fail(e) from e
     back = mapper.inverted()
 
-    table = Table(title=f"Local projects → {cfg.host or cfg.remote_home}")
+    table = Table(title=f"Local projects → {target.host or target.home}")
     table.add_column("Project", overflow="fold")
     table.add_column("Sessions", justify="right")
     table.add_column("On remote", overflow="fold")
@@ -290,14 +311,19 @@ def diff(
     cfg = _load_config()
     home = _local_home()
     selection = projects or None
-    console.print(f"[bold]Outgoing[/bold] (push → {cfg.host or cfg.remote_home})")
+    try:
+        target = resolve_remote(cfg, None)
+    except _FAILURES as e:
+        raise _fail(e) from e
+    where = target.host or target.home
+    console.print(f"[bold]Outgoing[/bold] (push → {where})")
     try:
         _summary_block(
             sync_mod.push(cfg, local_home=home, projects=selection, dry_run=True, force=True)
         )
     except _FAILURES as e:
         console.print(f"[yellow]~[/yellow] {e}")
-    console.print(f"\n[bold]Incoming[/bold] (pull ← {cfg.host or cfg.remote_home})")
+    console.print(f"\n[bold]Incoming[/bold] (pull ← {where})")
     try:
         _summary_block(
             sync_mod.pull(cfg, local_home=home, projects=selection, dry_run=True, force=True)

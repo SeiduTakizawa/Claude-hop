@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from claude_hop.config import Config
+from claude_hop.config import Config, resolve_remote
 from claude_hop.remap import PathMapper, encode_path, remap_file, remap_tree
 from claude_hop.transport import Transport
 
@@ -135,6 +135,7 @@ def _unknown_projects_error(missing: list[str], known: set[str]) -> SyncError:
 def push(
     cfg: Config,
     *,
+    remote: str | None = None,
     local_home: str | Path | None = None,
     projects: Sequence[str] | None = None,
     dry_run: bool = False,
@@ -143,9 +144,11 @@ def push(
 ) -> SyncReport:
     """Remap local sessions into a staging dir and merge them onto the remote.
 
+    ``remote`` names the target (resolved via config.resolve_remote).
     ``projects`` limits the push to the selected projects (paths or encoded
     names); the optional [sync] extras are skipped when a selection is given.
     """
+    target = resolve_remote(cfg, remote)
     local_home = Path(local_home) if local_home else Path.home()
     src = _projects_dir(local_home)
     if not src.is_dir() or not any(src.iterdir()):
@@ -159,8 +162,8 @@ def push(
             raise _unknown_projects_error(missing, known)
     if not force and claude_running():
         raise SyncError(RUNNING_MSG)
-    mapper = PathMapper.for_push(local_home, cfg.remote_home, cfg.mappings)
-    transport = Transport(cfg.host, cfg.remote_home)
+    mapper = PathMapper.for_push(local_home, target.home, cfg.merged_mappings(target.name))
+    transport = Transport(target.host, target.home)
     with tempfile.TemporaryDirectory(prefix="claude-hop-") as tmp:
         staging = Path(tmp) / "projects"
         log("remapping sessions into staging…")
@@ -179,6 +182,7 @@ def push(
 def pull(
     cfg: Config,
     *,
+    remote: str | None = None,
     local_home: str | Path | None = None,
     projects: Sequence[str] | None = None,
     dry_run: bool = False,
@@ -188,18 +192,23 @@ def pull(
 ) -> SyncReport:
     """Fetch remote sessions, remap them for this machine, and merge them in.
 
+    ``remote`` names the source (resolved via config.resolve_remote).
     ``projects`` limits the pull to the selected projects, named by their
-    *local* path or encoded name; the [sync] extras are skipped when a
-    selection is given.
+    *local* path or encoded name — the selector is translated through the
+    mapping and matched against the remote's project list, so a project
+    that doesn't exist locally yet is valid. The [sync] extras are skipped
+    when a selection is given.
     """
+    target = resolve_remote(cfg, remote)
+    mappings = cfg.merged_mappings(target.name)
     local_home = Path(local_home) if local_home else Path.home()
     dest = _projects_dir(local_home)
     if not force and claude_running():
         raise SyncError(RUNNING_MSG)
-    transport = Transport(cfg.host, cfg.remote_home)
+    transport = Transport(target.host, target.home)
     remote_names: list[str] | None = None
     if projects:
-        push_mapper = PathMapper.for_push(local_home, cfg.remote_home, cfg.mappings)
+        push_mapper = PathMapper.for_push(local_home, target.home, mappings)
         remote_names = list(
             dict.fromkeys(push_mapper.remap_dirname(n) for n in resolve_projects(projects))
         )
@@ -212,7 +221,7 @@ def pull(
             raise SyncError("not found on the remote: " + ", ".join(missing))
     elif not transport.remote_projects_exists():
         raise SyncError(f"no sessions on the remote ({transport.remote_projects} is missing)")
-    mapper = PathMapper.for_pull(local_home, cfg.remote_home, cfg.mappings)
+    mapper = PathMapper.for_pull(local_home, target.home, mappings)
     backup: Path | None = None
     with tempfile.TemporaryDirectory(prefix="claude-hop-") as tmp:
         raw = Path(tmp) / "raw"

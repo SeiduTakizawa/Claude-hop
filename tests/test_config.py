@@ -3,17 +3,34 @@ from pathlib import Path
 import pytest
 
 from claude_hop import config
-from claude_hop.config import Config, ConfigError
+from claude_hop.config import Config, ConfigError, Remote, resolve_remote
 
-FULL = """\
+MULTI = """\
+[remotes.mac]
+host = "mac.local"
+home = "/Users/alice"
+
+[remotes.mac.mappings]
+"/home/alice/work/webshop" = "/Users/alice/projects/webshop"
+
+[remotes.thinkpad]
+host = "192.168.1.50"
+home = "/home/vas"
+
+[sync]
+include_history = true
+
+[mappings]
+"/home/alice/work/blog" = "/srv/blog"
+"""
+
+LEGACY = """\
 [remote]
 host = "mac.local"
 home = "/Users/alice"
 
 [sync]
 include_history = true
-include_agents = false
-include_skills = true
 
 [mappings]
 "/home/alice/work/webshop" = "/Users/alice/projects/webshop"
@@ -26,111 +43,229 @@ def write(tmp_path: Path, text: str) -> Path:
     return p
 
 
-def test_full_config(tmp_path):
-    cfg = config.load(write(tmp_path, FULL))
-    assert cfg == Config(
-        host="mac.local",
-        remote_home="/Users/alice",
-        include_history=True,
-        include_agents=False,
-        include_skills=True,
-        mappings={"/home/alice/work/webshop": "/Users/alice/projects/webshop"},
-    )
+# ------------------------------------------------------------- new format
 
 
-def test_minimal_config_defaults(tmp_path):
-    cfg = config.load(write(tmp_path, '[remote]\nhost = "mac"\nhome = "/Users/alice"\n'))
-    assert cfg.include_history is cfg.include_agents is cfg.include_skills is False
-    assert cfg.mappings == {}
+def test_multi_remote_parse(tmp_path):
+    cfg = config.load(write(tmp_path, MULTI))
+    assert not cfg.legacy
+    assert list(cfg.remotes) == ["mac", "thinkpad"]
+    assert cfg.remotes["mac"].host == "mac.local"
+    assert cfg.remotes["mac"].home == "/Users/alice"
+    assert cfg.remotes["thinkpad"].host == "192.168.1.50"
+    assert cfg.include_history is True
+    assert cfg.mappings == {"/home/alice/work/blog": "/srv/blog"}
 
 
-def test_empty_host_allowed_for_local_mode(tmp_path):
-    cfg = config.load(write(tmp_path, '[remote]\nhost = ""\nhome = "/mnt/fake-remote/home"\n'))
-    assert cfg.host == ""
+def test_merged_mappings_global_plus_per_remote(tmp_path):
+    cfg = config.load(write(tmp_path, MULTI))
+    assert cfg.merged_mappings("mac") == {
+        "/home/alice/work/blog": "/srv/blog",
+        "/home/alice/work/webshop": "/Users/alice/projects/webshop",
+    }
+    assert cfg.merged_mappings("thinkpad") == {"/home/alice/work/blog": "/srv/blog"}
 
 
-def test_remote_home_trailing_slash_normalized(tmp_path):
-    cfg = config.load(write(tmp_path, '[remote]\nhost = "m"\nhome = "/Users/alice/"\n'))
-    assert cfg.remote_home == "/Users/alice"
+def test_per_remote_mapping_overrides_global(tmp_path):
+    text = """\
+[remotes.mac]
+host = "m"
+home = "/Users/a"
+
+[remotes.mac.mappings]
+"/home/a/x" = "/Users/a/mac-specific"
+
+[remotes.pad]
+host = "p"
+home = "/home/b"
+
+[mappings]
+"/home/a/x" = "/global/x"
+"""
+    cfg = config.load(write(tmp_path, text))
+    assert cfg.merged_mappings("mac")["/home/a/x"] == "/Users/a/mac-specific"
+    assert cfg.merged_mappings("pad")["/home/a/x"] == "/global/x"
 
 
-def test_missing_file():
-    with pytest.raises(ConfigError, match="claude-hop init"):
-        config.load("/nonexistent/config.toml")
+def test_empty_remotes_table_is_valid(tmp_path):
+    cfg = config.load(write(tmp_path, "[remotes]\n"))
+    assert cfg.remotes == {}
 
 
-def test_invalid_toml(tmp_path):
+def test_invalid_remote_name_rejected(tmp_path):
+    text = '[remotes."bad name"]\nhost = "m"\nhome = "/u/a"\n'
+    with pytest.raises(ConfigError, match="invalid remote name"):
+        config.load(write(tmp_path, text))
+
+
+def test_duplicate_remote_names_rejected(tmp_path):
+    text = '[remotes.mac]\nhost = "a"\nhome = "/u/a"\n[remotes.mac]\nhost = "b"\nhome = "/u/b"\n'
     with pytest.raises(ConfigError, match="invalid TOML"):
-        config.load(write(tmp_path, "[remote\nhost="))
-
-
-def test_missing_remote_table(tmp_path):
-    with pytest.raises(ConfigError, match=r"\[remote\]"):
-        config.load(write(tmp_path, '[sync]\ninclude_history = true\n'))
-
-
-def test_missing_home(tmp_path):
-    with pytest.raises(ConfigError, match=r"remote\.home"):
-        config.load(write(tmp_path, '[remote]\nhost = "mac"\n'))
-
-
-def test_relative_home_rejected(tmp_path):
-    with pytest.raises(ConfigError, match="absolute"):
-        config.load(write(tmp_path, '[remote]\nhost = "mac"\nhome = "Users/alice"\n'))
-
-
-def test_root_home_rejected(tmp_path):
-    with pytest.raises(ConfigError, match="root"):
-        config.load(write(tmp_path, '[remote]\nhost = "mac"\nhome = "/"\n'))
-
-
-def test_non_bool_sync_flag_rejected(tmp_path):
-    text = '[remote]\nhost = "m"\nhome = "/u/a"\n[sync]\ninclude_history = "yes"\n'
-    with pytest.raises(ConfigError, match="include_history"):
         config.load(write(tmp_path, text))
 
 
-def test_relative_mapping_rejected(tmp_path):
-    text = '[remote]\nhost = "m"\nhome = "/u/a"\n[mappings]\n"work/x" = "/u/a/x"\n'
-    with pytest.raises(ConfigError, match="absolute"):
-        config.load(write(tmp_path, text))
+def test_remote_missing_home_rejected(tmp_path):
+    with pytest.raises(ConfigError, match=r"remotes\.mac.*home"):
+        config.load(write(tmp_path, '[remotes.mac]\nhost = "m"\n'))
 
 
-def test_duplicate_mapping_targets_rejected(tmp_path):
-    text = (
-        '[remote]\nhost = "m"\nhome = "/u/a"\n[mappings]\n'
-        '"/h/a/x" = "/u/a/z"\n"/h/a/y" = "/u/a/z"\n'
-    )
-    with pytest.raises(ConfigError, match="unique"):
-        config.load(write(tmp_path, text))
+def test_merged_duplicate_targets_rejected(tmp_path):
+    text = """\
+[remotes.mac]
+host = "m"
+home = "/Users/a"
 
+[remotes.mac.mappings]
+"/home/a/x" = "/Users/a/z"
 
-def test_mapping_sources_colliding_after_normalization_rejected(tmp_path):
-    text = (
-        '[remote]\nhost = "m"\nhome = "/u/a"\n[mappings]\n'
-        '"/h/a/x" = "/u/a/x"\n"/h/a/x/" = "/u/a/y"\n'
-    )
-    with pytest.raises(ConfigError, match="duplicate"):
+[mappings]
+"/home/a/y" = "/Users/a/z"
+"""
+    with pytest.raises(ConfigError, match=r"remote 'mac'.*unique"):
         config.load(write(tmp_path, text))
 
 
 def test_mapping_target_equal_to_remote_home_rejected(tmp_path):
-    text = '[remote]\nhost = "m"\nhome = "/u/a"\n[mappings]\n"/h/a/x" = "/u/a"\n'
-    with pytest.raises(ConfigError, match=r"remote\.home"):
+    text = '[remotes.mac]\nhost = "m"\nhome = "/u/a"\n[mappings]\n"/h/x" = "/u/a"\n'
+    with pytest.raises(ConfigError, match="equals its home"):
         config.load(write(tmp_path, text))
+
+
+def test_global_mapping_conflicting_with_one_of_two_remotes(tmp_path):
+    # the conflict is per-remote: /u/a is pad's home, fine for mac
+    text = """\
+[remotes.mac]
+host = "m"
+home = "/Users/a"
+
+[remotes.pad]
+host = "p"
+home = "/u/a"
+
+[mappings]
+"/h/x" = "/u/a"
+"""
+    with pytest.raises(ConfigError, match="remote 'pad'"):
+        config.load(write(tmp_path, text))
+
+
+# ---------------------------------------------------------------- legacy
+
+
+def test_legacy_parses_as_default_remote(tmp_path):
+    cfg = config.load(write(tmp_path, LEGACY))
+    assert cfg.legacy
+    assert list(cfg.remotes) == ["default"]
+    r = cfg.remotes["default"]
+    assert (r.host, r.home) == ("mac.local", "/Users/alice")
+    assert cfg.include_history is True
+    # old top-level [mappings] stays global
+    assert cfg.merged_mappings("default") == {
+        "/home/alice/work/webshop": "/Users/alice/projects/webshop"
+    }
+
+
+def test_both_formats_rejected(tmp_path):
+    text = LEGACY + '\n[remotes.mac]\nhost = "m"\nhome = "/u/a"\n'
+    with pytest.raises(ConfigError, match="both"):
+        config.load(write(tmp_path, text))
+
+
+def test_neither_format_rejected(tmp_path):
+    with pytest.raises(ConfigError, match=r"\[remotes\]"):
+        config.load(write(tmp_path, "[sync]\ninclude_history = true\n"))
+
+
+def test_migrate_round_trip(tmp_path):
+    path = write(tmp_path, LEGACY)
+    before = config.load(path)
+    backup = config.migrate(path)
+
+    assert backup == tmp_path / "config.toml.bak"
+    assert backup.read_text(encoding="utf-8") == LEGACY
+    after = config.load(path)
+    assert not after.legacy
+    assert after.remotes == before.remotes
+    assert after.mappings == before.mappings
+    assert after.include_history == before.include_history
+
+
+def test_migrate_refuses_existing_backup(tmp_path):
+    path = write(tmp_path, LEGACY)
+    (tmp_path / "config.toml.bak").write_text("precious old backup", encoding="utf-8")
+    with pytest.raises(ConfigError, match="move it aside"):
+        config.migrate(path)
+    # nothing was touched
+    assert (tmp_path / "config.toml.bak").read_text(encoding="utf-8") == "precious old backup"
+    assert config.load(path).legacy
+
+
+def test_migrate_refuses_new_format(tmp_path):
+    path = write(tmp_path, MULTI)
+    with pytest.raises(ConfigError, match="already"):
+        config.migrate(path)
+
+
+# ------------------------------------------------------------- resolution
+
+
+def two_remotes() -> Config:
+    return Config(
+        remotes={
+            "mac": Remote(name="mac", host="m", home="/Users/a"),
+            "thinkpad": Remote(name="thinkpad", host="t", home="/home/b"),
+        }
+    )
+
+
+def test_resolve_explicit_name():
+    assert resolve_remote(two_remotes(), "thinkpad").host == "t"
+
+
+def test_resolve_sole_remote_implicitly():
+    cfg = Config(remotes={"mac": Remote(name="mac", host="m", home="/Users/a")})
+    assert resolve_remote(cfg, None).name == "mac"
+
+
+def test_resolve_multiple_without_name_errors():
+    with pytest.raises(ConfigError, match=r"Multiple remotes.*mac, thinkpad.*--all"):
+        resolve_remote(two_remotes(), None)
+
+
+def test_resolve_unknown_name_lists_available():
+    with pytest.raises(ConfigError, match=r"unknown remote 'nas'.*mac, thinkpad"):
+        resolve_remote(two_remotes(), "nas")
+
+
+def test_resolve_no_remotes():
+    with pytest.raises(ConfigError, match="no remotes configured"):
+        resolve_remote(Config(), None)
+
+
+# ------------------------------------------------------------ round trips
 
 
 def test_dumps_load_round_trip(tmp_path):
     cfg = Config(
-        host="mac.local",
-        remote_home="/Users/alice",
-        include_history=True,
-        mappings={
-            "/home/alice/work/webshop": "/Users/alice/projects/webshop",
-            '/home/alice/we"ird — path': "/Users/alice/wéird",
+        remotes={
+            "mac": Remote(
+                name="mac",
+                host="mac.local",
+                home="/Users/alice",
+                mappings={"/home/alice/we\"ird — path": "/Users/alice/wéird"},
+            ),
+            "pad": Remote(name="pad", host="", home="/mnt/pad-home"),
         },
+        include_history=True,
+        mappings={"/home/alice/work/blog": "/srv/blog"},
     )
     path = config.save(cfg, tmp_path / "sub" / "config.toml")
+    assert config.load(path) == cfg
+
+
+def test_zero_remote_round_trip(tmp_path):
+    cfg = Config(include_skills=True)
+    path = config.save(cfg, tmp_path / "config.toml")
     assert config.load(path) == cfg
 
 
